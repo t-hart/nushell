@@ -1,12 +1,32 @@
 use crate::parser::hir::syntax_shape::{
-    expand_bare, expand_syntax, expression::expand_file_path, parse_single_node, ExpandContext,
-    ExpandExpression, ExpandSyntax,
+    expand_atom, expand_bare, expand_syntax, expression::expand_file_path, parse_single_node,
+    ColorSyntax, ExpandContext, ExpandExpression, ExpandSyntax, ExpansionRule, FlatShape,
 };
 use crate::parser::{hir, hir::TokensIterator, Operator, RawToken, TokenNode};
 use crate::prelude::*;
 
 #[derive(Debug, Copy, Clone)]
 pub struct PatternShape;
+
+impl ColorSyntax for PatternShape {
+    type Info = ();
+
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        let atom = expand_atom(token_nodes, "pattern", context, ExpansionRule::permissive());
+
+        let atom = match atom {
+            Err(_) => return,
+            Ok(val) => val,
+        };
+
+        atom.color_tokens(shapes);
+    }
+}
 
 impl ExpandExpression for PatternShape {
     fn expand_expr<'a, 'b>(
@@ -23,7 +43,7 @@ impl ExpandExpression for PatternShape {
             Err(_) => {}
         }
 
-        parse_single_node(token_nodes, "Pattern", |token, token_tag| {
+        parse_single_node(token_nodes, "Pattern", |token, token_tag, _| {
             Ok(match token {
                 RawToken::GlobPattern => {
                     return Err(ShellError::unreachable(
@@ -44,7 +64,6 @@ impl ExpandExpression for PatternShape {
                 RawToken::ExternalCommand(tag) => hir::Expression::external_command(tag, token_tag),
                 RawToken::ExternalWord => return Err(ShellError::invalid_external_word(token_tag)),
                 RawToken::Number(_) => hir::Expression::bare(token_tag),
-                RawToken::Size(_, _) => hir::Expression::bare(token_tag),
 
                 RawToken::String(tag) => hir::Expression::file_path(
                     expand_file_path(tag.slice(context.source), context),

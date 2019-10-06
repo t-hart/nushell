@@ -14,9 +14,9 @@ use crate::git::current_branch;
 use crate::parser::registry::Signature;
 use crate::parser::{
     hir,
-    hir::syntax_shape::{CommandHeadShape, CommandSignature, ExpandSyntax},
+    hir::syntax_shape::{expand_syntax, PipelineShape},
     hir::{expand_external_tokens::expand_external_tokens, tokens_iterator::TokensIterator},
-    parse_command_tail, Pipeline, PipelineElement, TokenNode,
+    TokenNode,
 };
 use crate::prelude::*;
 
@@ -99,11 +99,17 @@ fn load_plugin(path: &std::path::Path, context: &mut Context) -> Result<(), Shel
                 },
                 Err(e) => {
                     trace!("incompatible plugin {:?}", input);
-                    Err(ShellError::string(format!("Error: {:?}", e)))
+                    Err(ShellError::untagged_runtime_error(format!(
+                        "Error: {:?}",
+                        e
+                    )))
                 }
             }
         }
-        Err(e) => Err(ShellError::string(format!("Error: {:?}", e))),
+        Err(e) => Err(ShellError::untagged_runtime_error(format!(
+            "Error: {:?}",
+            e
+        ))),
     };
 
     let _ = child.wait();
@@ -614,74 +620,14 @@ fn classify_pipeline(
     context: &Context,
     source: &Text,
 ) -> Result<ClassifiedPipeline, ShellError> {
-    let pipeline = pipeline.as_pipeline()?;
+    let mut pipeline_list = vec![pipeline.clone()];
+    let mut iterator = TokensIterator::all(&mut pipeline_list, pipeline.tag());
 
-    let Pipeline { parts, .. } = pipeline;
-
-    let commands: Result<Vec<_>, ShellError> = parts
-        .iter()
-        .map(|item| classify_command(&item, context, &source))
-        .collect();
-
-    Ok(ClassifiedPipeline {
-        commands: commands?,
-    })
-}
-
-fn classify_command(
-    command: &Tagged<PipelineElement>,
-    context: &Context,
-    source: &Text,
-) -> Result<ClassifiedCommand, ShellError> {
-    let mut iterator = TokensIterator::new(&command.tokens.item, command.tag, true);
-
-    let head = CommandHeadShape
-        .expand_syntax(&mut iterator, &context.expand_context(source, command.tag))?;
-
-    match &head {
-        CommandSignature::Expression(_) => Err(ShellError::syntax_error(
-            "Unexpected expression in command position".tagged(command.tag),
-        )),
-
-        // If the command starts with `^`, treat it as an external command no matter what
-        CommandSignature::External(name) => {
-            let name_str = name.slice(source);
-
-            external_command(&mut iterator, source, name_str.tagged(name))
-        }
-
-        CommandSignature::LiteralExternal { outer, inner } => {
-            let name_str = inner.slice(source);
-
-            external_command(&mut iterator, source, name_str.tagged(outer))
-        }
-
-        CommandSignature::Internal(command) => {
-            let tail = parse_command_tail(
-                &command.signature(),
-                &context.expand_context(source, command.tag),
-                &mut iterator,
-                command.tag,
-            )?;
-
-            let (positional, named) = match tail {
-                None => (None, None),
-                Some((positional, named)) => (positional, named),
-            };
-
-            let call = hir::Call {
-                head: Box::new(head.to_expression()),
-                positional,
-                named,
-            };
-
-            Ok(ClassifiedCommand::Internal(InternalCommand::new(
-                command.name().to_string(),
-                command.tag,
-                call,
-            )))
-        }
-    }
+    expand_syntax(
+        &PipelineShape,
+        &mut iterator,
+        &context.expand_context(source, pipeline.tag()),
+    )
 }
 
 // Classify this command as an external command, which doesn't give special meaning

@@ -48,16 +48,15 @@ pub fn expand_next_expression(
 fn triage_external_head(node: &TokenNode) -> Result<Tag, ShellError> {
     Ok(match node {
         TokenNode::Token(token) => token.tag(),
-        TokenNode::Call(_call) => unimplemented!(),
-        TokenNode::Nodes(_nodes) => unimplemented!(),
-        TokenNode::Delimited(_delimited) => unimplemented!(),
-        TokenNode::Pipeline(_pipeline) => unimplemented!(),
+        TokenNode::Call(_call) => unimplemented!("TODO: OMG"),
+        TokenNode::Nodes(_nodes) => unimplemented!("TODO: OMG"),
+        TokenNode::Delimited(_delimited) => unimplemented!("TODO: OMG"),
+        TokenNode::Pipeline(_pipeline) => unimplemented!("TODO: OMG"),
         TokenNode::Flag(flag) => flag.tag(),
-        TokenNode::Member(member) => *member,
         TokenNode::Whitespace(_whitespace) => {
             unreachable!("This function should be called after next_non_ws()")
         }
-        TokenNode::Error(_error) => unimplemented!(),
+        TokenNode::Error(_error) => unimplemented!("TODO: OMG"),
     })
 }
 
@@ -73,7 +72,7 @@ fn triage_continuation<'a, 'b>(
 
     match &node {
         node if node.is_whitespace() => return Ok(None),
-        TokenNode::Token(..) | TokenNode::Flag(..) | TokenNode::Member(..) => {}
+        TokenNode::Token(..) | TokenNode::Flag(..) => {}
         TokenNode::Call(..) => unimplemented!("call"),
         TokenNode::Nodes(..) => unimplemented!("nodes"),
         TokenNode::Delimited(..) => unimplemented!("delimited"),

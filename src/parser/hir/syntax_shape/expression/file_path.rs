@@ -1,12 +1,45 @@
+use crate::parser::hir::syntax_shape::expression::atom::{expand_atom, AtomicToken, ExpansionRule};
 use crate::parser::hir::syntax_shape::{
-    expand_syntax, expression::expand_file_path, parse_single_node, BarePathShape, ExpandContext,
-    ExpandExpression,
+    expression::expand_file_path, ColorSyntax, ExpandContext, ExpandExpression, FlatShape,
 };
-use crate::parser::{hir, hir::TokensIterator, RawToken};
+use crate::parser::{hir, hir::TokensIterator};
 use crate::prelude::*;
 
 #[derive(Debug, Copy, Clone)]
 pub struct FilePathShape;
+
+impl ColorSyntax for FilePathShape {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        let atom = expand_atom(
+            token_nodes,
+            "file path",
+            context,
+            ExpansionRule::permissive(),
+        );
+
+        let atom = match atom {
+            Err(_) => return,
+            Ok(atom) => atom,
+        };
+
+        match atom.item {
+            AtomicToken::Word { .. }
+            | AtomicToken::String { .. }
+            | AtomicToken::Number { .. }
+            | AtomicToken::Size { .. } => {
+                return shapes.push(FlatShape::Path.tagged(atom.tag));
+            }
+
+            _ => return atom.color_tokens(shapes),
+        }
+    }
+}
 
 impl ExpandExpression for FilePathShape {
     fn expand_expr<'a, 'b>(
@@ -14,46 +47,20 @@ impl ExpandExpression for FilePathShape {
         token_nodes: &mut TokensIterator<'_>,
         context: &ExpandContext,
     ) -> Result<hir::Expression, ShellError> {
-        let bare = expand_syntax(&BarePathShape, token_nodes, context);
+        let atom = expand_atom(token_nodes, "file path", context, ExpansionRule::new())?;
 
-        match bare {
-            Ok(tag) => {
-                let string = tag.slice(context.source);
-                let path = expand_file_path(string, context);
-                return Ok(hir::Expression::file_path(path, tag));
+        match atom.item {
+            AtomicToken::Word { text: body } | AtomicToken::String { body } => {
+                let path = expand_file_path(body.slice(context.source), context);
+                return Ok(hir::Expression::file_path(path, atom.tag));
             }
-            Err(_) => {}
+
+            AtomicToken::Number { .. } | AtomicToken::Size { .. } => {
+                let path = atom.tag.slice(context.source);
+                return Ok(hir::Expression::file_path(path, atom.tag));
+            }
+
+            _ => return atom.into_hir(context, "file path"),
         }
-
-        parse_single_node(token_nodes, "Path", |token, token_tag| {
-            Ok(match token {
-                RawToken::GlobPattern => {
-                    return Err(ShellError::type_error(
-                        "Path",
-                        "glob pattern".tagged(token_tag),
-                    ))
-                }
-                RawToken::Operator(..) => {
-                    return Err(ShellError::type_error("Path", "operator".tagged(token_tag)))
-                }
-                RawToken::Variable(tag) if tag.slice(context.source) == "it" => {
-                    hir::Expression::it_variable(tag, token_tag)
-                }
-                RawToken::Variable(tag) => hir::Expression::variable(tag, token_tag),
-                RawToken::ExternalCommand(tag) => hir::Expression::external_command(tag, token_tag),
-                RawToken::ExternalWord => return Err(ShellError::invalid_external_word(token_tag)),
-                RawToken::Number(_) => hir::Expression::bare(token_tag),
-                RawToken::Size(_, _) => hir::Expression::bare(token_tag),
-                RawToken::Bare => hir::Expression::file_path(
-                    expand_file_path(token_tag.slice(context.source), context),
-                    token_tag,
-                ),
-
-                RawToken::String(tag) => hir::Expression::file_path(
-                    expand_file_path(tag.slice(context.source), context),
-                    token_tag,
-                ),
-            })
-        })
     }
 }

@@ -2,10 +2,13 @@ use crate::errors::ShellError;
 use crate::parser::{
     hir,
     hir::syntax_shape::{
-        expand_expr, maybe_spaced, spaced, AnyExpressionShape, ExpandContext, ExpandSyntax,
+        color_syntax, expand_expr, maybe_spaced, spaced, AnyExpressionShape, ColorSyntax,
+        ExpandContext, ExpandSyntax,
     },
     hir::{debug_tokens, TokensIterator},
+    FlatShape,
 };
+use crate::Tagged;
 
 #[derive(Debug, Copy, Clone)]
 pub struct ExpressionListShape;
@@ -28,8 +31,6 @@ impl ExpandSyntax for ExpressionListShape {
 
         exprs.push(expr);
 
-        println!("{:?}", debug_tokens(token_nodes, context.source));
-
         loop {
             if token_nodes.at_end_possible_ws() {
                 return Ok(exprs);
@@ -38,6 +39,36 @@ impl ExpandSyntax for ExpressionListShape {
             let expr = expand_expr(&spaced(AnyExpressionShape), token_nodes, context)?;
 
             exprs.push(expr);
+        }
+    }
+}
+
+impl ColorSyntax for ExpressionListShape {
+    type Info = ();
+
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) {
+        if token_nodes.at_end_possible_ws() {
+            return;
+        }
+
+        color_syntax(
+            &maybe_spaced(AnyExpressionShape),
+            token_nodes,
+            context,
+            shapes,
+        );
+
+        loop {
+            if token_nodes.at_end_possible_ws() {
+                return;
+            }
+
+            color_syntax(&spaced(AnyExpressionShape), token_nodes, context, shapes);
         }
     }
 }

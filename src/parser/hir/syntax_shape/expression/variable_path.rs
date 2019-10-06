@@ -1,6 +1,7 @@
 use crate::parser::hir::syntax_shape::{
-    expand_expr, expand_syntax, parse_single_node, AnyExpressionShape, BareShape, ExpandContext,
-    ExpandExpression, ExpandSyntax, Peeked, SkipSyntax, StringShape, TestSyntax, WhitespaceShape,
+    color_syntax, expand_atom, expand_expr, expand_syntax, parse_single_node, AnyExpressionShape,
+    AtomicToken, BareShape, ColorSyntax, ExpandContext, ExpandExpression, ExpandSyntax,
+    ExpansionRule, FlatShape, Peeked, SkipSyntax, StringShape, TestSyntax, WhitespaceShape,
 };
 use crate::parser::{hir, hir::Expression, hir::TokensIterator, Operator, RawToken};
 use crate::prelude::*;
@@ -42,8 +43,64 @@ impl ExpandExpression for VariablePathShape {
     }
 }
 
+impl ColorSyntax for VariablePathShape {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        color_syntax(&VariableShape, token_nodes, context, shapes);
+
+        loop {
+            let (seen, _) = color_syntax(
+                &ColorableDotShape { in_bare: false },
+                token_nodes,
+                context,
+                shapes,
+            );
+
+            if !seen {
+                break;
+            }
+
+            color_syntax(&MemberShape, token_nodes, context, shapes);
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct PathTailShape;
+
+impl ColorSyntax for PathTailShape {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        loop {
+            let (seen, _) = color_syntax(
+                &ColorableDotShape { in_bare: false },
+                token_nodes,
+                context,
+                shapes,
+            );
+
+            if !seen {
+                return;
+            }
+
+            let (seen, _) = color_syntax(&MemberShape, token_nodes, context, shapes);
+
+            if !seen {
+                return;
+            }
+        }
+    }
+}
 
 impl ExpandSyntax for PathTailShape {
     type Output = (Vec<Tagged<String>>, Tag);
@@ -121,6 +178,40 @@ impl ExpandSyntax for ExpressionContinuationShape {
     }
 }
 
+pub enum ContinuationInfo {
+    Dot,
+    Infix,
+}
+
+impl ColorSyntax for ExpressionContinuationShape {
+    type Info = ContinuationInfo;
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> ContinuationInfo {
+        // Try to expand a `.`
+        let (seen, _) = color_syntax(
+            &ColorableDotShape { in_bare: false },
+            token_nodes,
+            context,
+            shapes,
+        );
+
+        if seen {
+            color_syntax(&MemberShape, token_nodes, context, shapes);
+            ContinuationInfo::Dot
+        } else {
+            // TODO: error correction
+            color_syntax(&InfixShape, token_nodes, context, shapes);
+            color_syntax(&AnyExpressionShape, token_nodes, context, shapes);
+
+            ContinuationInfo::Infix
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct VariableShape;
 
@@ -130,7 +221,7 @@ impl ExpandExpression for VariableShape {
         token_nodes: &mut TokensIterator<'_>,
         context: &ExpandContext,
     ) -> Result<hir::Expression, ShellError> {
-        parse_single_node(token_nodes, "variable", |token, token_tag| {
+        parse_single_node(token_nodes, "variable", |token, token_tag, _| {
             Ok(match token {
                 RawToken::Variable(tag) => {
                     if tag.slice(context.source) == "it" {
@@ -147,6 +238,34 @@ impl ExpandExpression for VariableShape {
                 }
             })
         })
+    }
+}
+
+impl ColorSyntax for VariableShape {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) {
+        let atom = expand_atom(
+            token_nodes,
+            "variable",
+            context,
+            ExpansionRule::permissive(),
+        );
+
+        let atom = match atom {
+            Err(_) => return,
+            Ok(atom) => atom,
+        };
+
+        match atom.item {
+            AtomicToken::Variable { name } => shapes.push(FlatShape::Variable.tagged(atom.tag)),
+            AtomicToken::ItVariable { name } => shapes.push(FlatShape::ItVariable.tagged(atom.tag)),
+            other => return,
+        }
     }
 }
 
@@ -272,6 +391,18 @@ pub fn expand_column_path<'a, 'b>(
 #[derive(Debug, Copy, Clone)]
 pub struct ColumnPathShape;
 
+impl ColorSyntax for ColumnPathShape {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        unimplemented!()
+    }
+}
+
 impl ExpandSyntax for ColumnPathShape {
     type Output = Tagged<Vec<Member>>;
 
@@ -286,6 +417,46 @@ impl ExpandSyntax for ColumnPathShape {
 
 #[derive(Debug, Copy, Clone)]
 pub struct MemberShape;
+
+impl ColorSyntax for MemberShape {
+    type Info = ();
+
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        let bare = BareShape.test(token_nodes, context);
+        if let Some(peeked) = bare {
+            let peeked = peeked.not_eof("column");
+
+            match peeked {
+                Err(_) => return,
+                Ok(peeked) => {
+                    let tag = peeked.node.tag();
+                    peeked.commit();
+                    return shapes.push(FlatShape::BareMember.tagged(tag));
+                }
+            }
+        }
+
+        let string = StringShape.test(token_nodes, context);
+
+        if let Some(peeked) = string {
+            let peeked = peeked.not_eof("column");
+
+            match peeked {
+                Err(_) => return,
+                Ok(peeked) => {
+                    let tag = peeked.node.tag();
+                    peeked.commit();
+                    return shapes.push(FlatShape::BareMember.tagged(tag));
+                }
+            }
+        }
+    }
+}
 
 impl ExpandSyntax for MemberShape {
     type Output = Member;
@@ -317,6 +488,42 @@ impl ExpandSyntax for MemberShape {
 #[derive(Debug, Copy, Clone)]
 pub struct DotShape;
 
+#[derive(Debug, Copy, Clone)]
+pub struct ColorableDotShape {
+    pub(crate) in_bare: bool,
+}
+
+impl ColorSyntax for ColorableDotShape {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        let peeked = token_nodes.peek_any().not_eof("dot");
+
+        let peeked = match peeked {
+            Err(_) => return,
+            Ok(peeked) => peeked,
+        };
+
+        match peeked.node {
+            node if node.is_dot() => {
+                peeked.commit();
+
+                if self.in_bare {
+                    shapes.push(FlatShape::Word.tagged(node.tag()))
+                } else {
+                    shapes.push(FlatShape::Dot.tagged(node.tag()))
+                }
+            }
+
+            _ => return,
+        }
+    }
+}
+
 impl SkipSyntax for DotShape {
     fn skip<'a, 'b>(
         &self,
@@ -337,7 +544,7 @@ impl ExpandSyntax for DotShape {
         token_nodes: &'b mut TokensIterator<'a>,
         _context: &ExpandContext,
     ) -> Result<Self::Output, ShellError> {
-        parse_single_node(token_nodes, "dot", |token, token_tag| {
+        parse_single_node(token_nodes, "dot", |token, token_tag, _| {
             Ok(match token {
                 RawToken::Operator(Operator::Dot) => token_tag,
                 _ => {
@@ -354,6 +561,56 @@ impl ExpandSyntax for DotShape {
 #[derive(Debug, Copy, Clone)]
 pub struct InfixShape;
 
+impl ColorSyntax for InfixShape {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        let checkpoint = token_nodes.checkpoint();
+
+        // An infix operator must be prefixed by whitespace
+        let (seen, _) = color_syntax(&WhitespaceShape, checkpoint.iterator, context, shapes);
+
+        if !seen {
+            return;
+        }
+
+        // Parse the next TokenNode after the whitespace
+        let operator = parse_single_node(
+            checkpoint.iterator,
+            "infix operator",
+            |token, token_tag, _| {
+                Ok(match token {
+                    // If it's an operator (and not `.`), it's a match
+                    RawToken::Operator(operator) if operator != Operator::Dot => {
+                        shapes.push(FlatShape::Operator.tagged(token_tag))
+                    }
+
+                    // Otherwise, it's not a match
+                    _ => {}
+                })
+            },
+        );
+
+        match operator {
+            Err(_) => return,
+            Ok(_) => {}
+        }
+
+        // An infix operator must be followed by whitespace
+        let (seen, _) = color_syntax(&WhitespaceShape, checkpoint.iterator, context, shapes);
+
+        if !seen {
+            return;
+        }
+
+        checkpoint.commit();
+    }
+}
+
 impl ExpandSyntax for InfixShape {
     type Output = (Tag, Tagged<Operator>, Tag);
 
@@ -368,8 +625,10 @@ impl ExpandSyntax for InfixShape {
         let start = expand_syntax(&WhitespaceShape, checkpoint.iterator, context)?;
 
         // Parse the next TokenNode after the whitespace
-        let operator =
-            parse_single_node(checkpoint.iterator, "infix operator", |token, token_tag| {
+        let operator = parse_single_node(
+            checkpoint.iterator,
+            "infix operator",
+            |token, token_tag, _| {
                 Ok(match token {
                     // If it's an operator (and not `.`), it's a match
                     RawToken::Operator(operator) if operator != Operator::Dot => {
@@ -384,7 +643,8 @@ impl ExpandSyntax for InfixShape {
                         ))
                     }
                 })
-            })?;
+            },
+        )?;
 
         // An infix operator must be followed by whitespace
         let end = expand_syntax(&WhitespaceShape, checkpoint.iterator, context)?;

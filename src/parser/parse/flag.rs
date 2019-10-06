@@ -12,6 +12,6 @@ pub enum FlagKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Getters, new)]
 #[get = "pub(crate)"]
 pub struct Flag {
-    kind: FlagKind,
-    name: Tag,
+    pub(crate) kind: FlagKind,
+    pub(crate) name: Tag,
 }

@@ -107,16 +107,11 @@ fn paint_token_node(token_node: &TokenNode, line: &str) -> String {
         TokenNode::Nodes(..) => Color::Green.bold().paint(token_node.tag().slice(line)),
         TokenNode::Whitespace(..) => Color::White.normal().paint(token_node.tag().slice(line)),
         TokenNode::Flag(..) => Color::Black.bold().paint(token_node.tag().slice(line)),
-        TokenNode::Member(..) => Color::Yellow.bold().paint(token_node.tag().slice(line)),
         TokenNode::Error(..) => Color::Red.bold().paint(token_node.tag().slice(line)),
         TokenNode::Delimited(..) => Color::White.paint(token_node.tag().slice(line)),
         TokenNode::Pipeline(..) => Color::Blue.normal().paint(token_node.tag().slice(line)),
         TokenNode::Token(Tagged {
             item: RawToken::Number(..),
-            ..
-        }) => Color::Purple.bold().paint(token_node.tag().slice(line)),
-        TokenNode::Token(Tagged {
-            item: RawToken::Size(..),
             ..
         }) => Color::Purple.bold().paint(token_node.tag().slice(line)),
         TokenNode::Token(Tagged {
@@ -159,8 +154,8 @@ fn paint_pipeline_element(pipeline_element: &PipelineElement, line: &str) -> Str
         styled.push_str(&Color::Purple.paint("|"));
     }
 
-    let mut tokens =
-        TokensIterator::new(&pipeline_element.tokens, pipeline_element.tokens.tag, false);
+    let tokens =
+        &mut TokensIterator::new(&pipeline_element.tokens, pipeline_element.tokens.tag, false);
     let head = tokens.next();
 
     match head {

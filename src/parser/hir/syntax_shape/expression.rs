@@ -1,3 +1,4 @@
+pub(crate) mod atom;
 pub(crate) mod delimited;
 pub(crate) mod file_path;
 pub(crate) mod list;
@@ -8,14 +9,14 @@ pub(crate) mod unit;
 pub(crate) mod variable_path;
 
 use crate::parser::hir::syntax_shape::{
-    expand_expr, expand_syntax, expand_variable, expression::delimited::expand_delimited_expr,
-    BareShape, DotShape, ExpandContext, ExpandExpression, ExpandSyntax, ExpressionContinuation,
-    ExpressionContinuationShape, UnitShape,
+    color_delimited_square, color_syntax, expand_atom, expand_delimited_square, expand_expr,
+    expand_syntax, AtomicToken, BareShape, ColorSyntax, ColorableDotShape, DotShape, ExpandContext,
+    ExpandExpression, ExpandSyntax, ExpansionRule, ExpressionContinuation,
+    ExpressionContinuationShape, FlatShape,
 };
 use crate::parser::{
     hir,
-    hir::{Expression, Operator, TokensIterator},
-    RawToken, Token, TokenNode,
+    hir::{Expression, TokensIterator},
 };
 use crate::prelude::*;
 use std::path::PathBuf;
@@ -33,6 +34,22 @@ impl ExpandExpression for AnyExpressionShape {
         let head = expand_expr(&AnyExpressionStartShape, token_nodes, context)?;
 
         continue_expression(head, token_nodes, context)
+    }
+}
+
+impl ColorSyntax for AnyExpressionShape {
+    type Info = ();
+
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) {
+        // Look for an expression at the cursor
+        color_syntax(&AnyExpressionStartShape, token_nodes, context, shapes);
+
+        continue_coloring_expression(token_nodes, context, shapes);
     }
 }
 
@@ -64,6 +81,21 @@ pub(crate) fn continue_expression(
     }
 }
 
+pub(crate) fn continue_coloring_expression(
+    token_nodes: &mut TokensIterator<'_>,
+    context: &ExpandContext,
+    shapes: &mut Vec<Tagged<FlatShape>>,
+) {
+    loop {
+        // Check to see whether there's any continuation after the head expression
+        let (seen, _) = color_syntax(&ExpressionContinuationShape, token_nodes, context, shapes);
+
+        if !seen {
+            return;
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct AnyExpressionStartShape;
 
@@ -73,58 +105,112 @@ impl ExpandExpression for AnyExpressionStartShape {
         token_nodes: &mut TokensIterator<'_>,
         context: &ExpandContext,
     ) -> Result<hir::Expression, ShellError> {
-        let size = expand_expr(&UnitShape, token_nodes, context);
+        let atom = expand_atom(token_nodes, "expression", context, ExpansionRule::new())?;
 
-        match size {
-            Ok(expr) => return Ok(expr),
-            Err(_) => {}
-        }
-
-        let peek_next = token_nodes.peek_any().not_eof("expression")?;
-
-        let head = match peek_next.node {
-            TokenNode::Token(token) => match token.item {
-                RawToken::Bare | RawToken::Operator(Operator::Dot) => {
-                    let start = token.tag;
-                    peek_next.commit();
-
-                    let end = expand_syntax(&BareTailShape, token_nodes, context)?;
-
-                    match end {
-                        Some(end) => return Ok(hir::Expression::bare(start.until(end))),
-                        None => return Ok(hir::Expression::bare(start)),
-                    }
-                }
-                _ => {
-                    peek_next.commit();
-                    expand_one_context_free_token(*token, context)
-                }
-            },
-            node @ TokenNode::Call(_)
-            | node @ TokenNode::Nodes(_)
-            | node @ TokenNode::Pipeline(_)
-            | node @ TokenNode::Flag(_)
-            | node @ TokenNode::Member(_)
-            | node @ TokenNode::Whitespace(_) => {
-                return Err(ShellError::type_error(
-                    "expression",
-                    node.tagged_type_name(),
+        match atom.item {
+            AtomicToken::Size { number, unit } => {
+                return Ok(hir::Expression::size(
+                    number.to_number(context.source),
+                    unit.item,
+                    atom.tag,
                 ))
             }
-            TokenNode::Delimited(delimited) => {
-                peek_next.commit();
-                expand_delimited_expr(delimited, context)
+
+            AtomicToken::SquareDelimited { nodes, .. } => {
+                expand_delimited_square(&nodes, atom.tag, context)
             }
 
-            TokenNode::Error(error) => return Err(*error.item.clone()),
-        }?;
+            AtomicToken::Word { .. } | AtomicToken::Dot { .. } => {
+                let end = expand_syntax(&BareTailShape, token_nodes, context)?;
+                Ok(hir::Expression::bare(atom.tag.until_option(end)))
+            }
 
-        Ok(head)
+            other => return other.tagged(atom.tag).into_hir(context, "expression"),
+        }
+    }
+}
+
+impl ColorSyntax for AnyExpressionStartShape {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) {
+        let atom = token_nodes.spanned(|token_nodes| {
+            expand_atom(token_nodes, "expression", context, ExpansionRule::new())
+        });
+
+        let atom = match atom {
+            Tagged {
+                item: Err(err),
+                tag,
+            } => {
+                shapes.push(FlatShape::Error.tagged(tag));
+                return;
+            }
+
+            Tagged {
+                item: Ok(value), ..
+            } => value,
+        };
+
+        match atom.item {
+            AtomicToken::Size { number, unit } => shapes.push(
+                FlatShape::Size {
+                    number: number.tag,
+                    unit: unit.tag,
+                }
+                .tagged(atom.tag),
+            ),
+
+            AtomicToken::SquareDelimited { nodes, tags } => {
+                color_delimited_square(tags, &nodes, atom.tag, context, shapes)
+            }
+
+            AtomicToken::Word { .. } | AtomicToken::Dot { .. } => {
+                color_syntax(&BareTailShape, token_nodes, context, shapes);
+            }
+
+            _ => atom.color_tokens(shapes),
+        }
     }
 }
 
 #[derive(Debug, Copy, Clone)]
 pub struct BareTailShape;
+
+impl ColorSyntax for BareTailShape {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        loop {
+            let (seen, _) = color_syntax(&BareShape, token_nodes, context, shapes);
+
+            if seen {
+                continue;
+            }
+
+            let (seen, _) = color_syntax(
+                &ColorableDotShape { in_bare: true },
+                token_nodes,
+                context,
+                shapes,
+            );
+
+            if seen {
+                continue;
+            } else {
+                break;
+            }
+        }
+    }
+}
 
 impl ExpandSyntax for BareTailShape {
     type Output = Option<Tag>;
@@ -156,29 +242,6 @@ impl ExpandSyntax for BareTailShape {
 
         Ok(end)
     }
-}
-
-fn expand_one_context_free_token<'a, 'b>(
-    token: Token,
-    context: &ExpandContext,
-) -> Result<hir::Expression, ShellError> {
-    Ok(match token.item {
-        RawToken::Number(number) => {
-            hir::Expression::number(number.to_number(context.source), token.tag)
-        }
-        RawToken::Operator(..) => {
-            return Err(ShellError::syntax_error(
-                "unexpected operator, expected an expression".tagged(token.tag),
-            ))
-        }
-        RawToken::Size(..) => unimplemented!("size"),
-        RawToken::String(tag) => hir::Expression::string(tag, token.tag),
-        RawToken::Variable(tag) => expand_variable(tag, token.tag, &context.source),
-        RawToken::ExternalCommand(_) => unimplemented!(),
-        RawToken::ExternalWord => unimplemented!(),
-        RawToken::GlobPattern => hir::Expression::pattern(token.tag),
-        RawToken::Bare => hir::Expression::string(token.tag, token.tag),
-    })
 }
 
 pub fn expand_file_path(string: &str, context: &ExpandContext) -> PathBuf {

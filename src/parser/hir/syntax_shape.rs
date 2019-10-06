@@ -1,15 +1,20 @@
 mod block;
 mod expression;
+pub(crate) mod flat_shape;
 
 use crate::cli::external_command;
-use crate::commands::{classified::InternalCommand, ClassifiedCommand, Command};
+use crate::commands::{
+    classified::{ClassifiedPipeline, InternalCommand},
+    ClassifiedCommand, Command,
+};
 use crate::parser::hir::syntax_shape::block::AnyBlockShape;
 use crate::parser::hir::tokens_iterator::Peeked;
 use crate::parser::parse_command::parse_command_tail;
+use crate::parser::PipelineElement;
 use crate::parser::{
     hir,
     hir::{debug_tokens, TokensIterator},
-    Operator, RawToken, TokenNode,
+    FlatShape, Operator, Pipeline, RawToken, TokenNode,
 };
 use crate::prelude::*;
 use derive_new::new;
@@ -18,6 +23,10 @@ use log::trace;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub(crate) use self::expression::atom::{expand_atom, AtomicToken, ExpansionRule};
+pub(crate) use self::expression::delimited::{
+    color_delimited_brace, color_delimited_square, expand_delimited_square,
+};
 pub(crate) use self::expression::file_path::FilePathShape;
 pub(crate) use self::expression::list::ExpressionListShape;
 pub(crate) use self::expression::number::{IntShape, NumberShape};
@@ -25,8 +34,8 @@ pub(crate) use self::expression::pattern::PatternShape;
 pub(crate) use self::expression::string::StringShape;
 pub(crate) use self::expression::unit::UnitShape;
 pub(crate) use self::expression::variable_path::{
-    ColumnPathShape, DotShape, ExpressionContinuation, ExpressionContinuationShape, MemberShape,
-    PathTailShape, VariablePathShape,
+    ColorableDotShape, ColumnPathShape, DotShape, ExpressionContinuation,
+    ExpressionContinuationShape, MemberShape, PathTailShape, VariablePathShape,
 };
 pub(crate) use self::expression::{continue_expression, AnyExpressionShape};
 
@@ -41,9 +50,50 @@ pub enum SyntaxShape {
     Int,
     Path,
     Pattern,
-    Binary,
     Block,
-    Boolean,
+}
+
+impl ColorSyntax for SyntaxShape {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        match self {
+            SyntaxShape::Any => {
+                color_syntax(&AnyExpressionShape, token_nodes, context, shapes);
+            }
+            SyntaxShape::List => {
+                color_syntax(&ExpressionListShape, token_nodes, context, shapes);
+            }
+            SyntaxShape::Int => {
+                color_syntax(&IntShape, token_nodes, context, shapes);
+            }
+            SyntaxShape::String => {
+                color_syntax(&StringShape, token_nodes, context, shapes);
+            }
+            SyntaxShape::Member => {
+                color_syntax(&MemberShape, token_nodes, context, shapes);
+            }
+            SyntaxShape::ColumnPath => {
+                color_syntax(&ColumnPathShape, token_nodes, context, shapes);
+            }
+            SyntaxShape::Number => {
+                color_syntax(&NumberShape, token_nodes, context, shapes);
+            }
+            SyntaxShape::Path => {
+                color_syntax(&FilePathShape, token_nodes, context, shapes);
+            }
+            SyntaxShape::Pattern => {
+                color_syntax(&PatternShape, token_nodes, context, shapes);
+            }
+            SyntaxShape::Block => {
+                color_syntax(&AnyBlockShape, token_nodes, context, shapes);
+            }
+        };
+    }
 }
 
 impl ExpandExpression for SyntaxShape {
@@ -73,9 +123,7 @@ impl ExpandExpression for SyntaxShape {
             SyntaxShape::Number => expand_expr(&NumberShape, token_nodes, context),
             SyntaxShape::Path => expand_expr(&FilePathShape, token_nodes, context),
             SyntaxShape::Pattern => expand_expr(&PatternShape, token_nodes, context),
-            SyntaxShape::Binary => Err(ShellError::unimplemented("SyntaxShape:Binary")),
             SyntaxShape::Block => expand_expr(&AnyBlockShape, token_nodes, context),
-            SyntaxShape::Boolean => Err(ShellError::unimplemented("SyntaxShape:Boolean")),
         }
     }
 }
@@ -92,9 +140,7 @@ impl std::fmt::Display for SyntaxShape {
             SyntaxShape::Number => write!(f, "Number"),
             SyntaxShape::Path => write!(f, "Path"),
             SyntaxShape::Pattern => write!(f, "Pattern"),
-            SyntaxShape::Binary => write!(f, "Binary"),
             SyntaxShape::Block => write!(f, "Block"),
-            SyntaxShape::Boolean => write!(f, "Boolean"),
         }
     }
 }
@@ -140,12 +186,23 @@ pub trait TestSyntax: std::fmt::Debug + Copy {
     ) -> Option<Peeked<'a, 'b>>;
 }
 
-pub trait ExpandExpression: std::fmt::Debug + Copy {
+pub trait ExpandExpression: ColorSyntax + std::fmt::Debug + Copy {
     fn expand_expr<'a, 'b>(
         &self,
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
     ) -> Result<hir::Expression, ShellError>;
+}
+
+pub trait ColorSyntax: std::fmt::Debug + Copy {
+    type Info;
+
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info;
 }
 
 pub(crate) trait ExpandSyntax: std::fmt::Debug + Copy {
@@ -178,6 +235,22 @@ pub(crate) fn expand_syntax<'a, 'b, T: ExpandSyntax>(
             Ok(result)
         }
     }
+}
+
+pub fn color_syntax<'a, 'b, T: ColorSyntax<Info = U>, U>(
+    shape: &T,
+    token_nodes: &'b mut TokensIterator<'a>,
+    context: &ExpandContext,
+    shapes: &mut Vec<Tagged<FlatShape>>,
+) -> (bool, U) {
+    trace!(target: "nu::expand_syntax", "before {} :: {:?}", std::any::type_name::<T>(), debug_tokens(token_nodes, context.source));
+
+    let len = shapes.len();
+    let result = shape.color_syntax(token_nodes, context, shapes);
+
+    trace!(target: "nu::expand_syntax", "ok :: {:?}", debug_tokens(token_nodes, context.source));
+
+    (len == shapes.len(), result)
 }
 
 pub(crate) fn expand_expr<'a, 'b, T: ExpandExpression>(
@@ -314,6 +387,35 @@ impl ExpandSyntax for BarePathShape {
 #[derive(Debug, Copy, Clone)]
 pub struct BareShape;
 
+impl ColorSyntax for BareShape {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        let peeked = token_nodes.peek_any().not_eof("word");
+
+        let peeked = match peeked {
+            Err(_) => return,
+            Ok(peeked) => peeked,
+        };
+
+        match peeked.node {
+            TokenNode::Token(Tagged {
+                item: RawToken::Bare,
+                tag,
+            }) => {
+                peeked.commit();
+                shapes.push(FlatShape::Word.tagged(tag));
+            }
+
+            other => FlatShape::from(other, context.source, shapes),
+        }
+    }
+}
+
 impl ExpandSyntax for BareShape {
     type Output = Tagged<String>;
 
@@ -384,6 +486,35 @@ impl CommandSignature {
 }
 
 #[derive(Debug, Copy, Clone)]
+pub struct PipelineShape;
+
+impl ExpandSyntax for PipelineShape {
+    type Output = ClassifiedPipeline;
+    fn expand_syntax<'a, 'b>(
+        &self,
+        iterator: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+    ) -> Result<Self::Output, ShellError> {
+        let source = context.source;
+
+        let peeked = iterator.peek_any().not_eof("pipeline")?;
+        let pipeline = peeked.node.as_pipeline()?;
+        peeked.commit();
+
+        let Pipeline { parts, .. } = pipeline;
+
+        let commands: Result<Vec<_>, ShellError> = parts
+            .iter()
+            .map(|item| classify_command(&item, context, &source))
+            .collect();
+
+        Ok(ClassifiedPipeline {
+            commands: commands?,
+        })
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
 pub struct CommandHeadShape;
 
 impl ExpandSyntax for CommandHeadShape {
@@ -395,7 +526,7 @@ impl ExpandSyntax for CommandHeadShape {
         context: &ExpandContext,
     ) -> Result<CommandSignature, ShellError> {
         let node =
-            parse_single_node_skipping_ws(token_nodes, "command head1", |token, token_tag| {
+            parse_single_node_skipping_ws(token_nodes, "command head1", |token, token_tag, _| {
                 Ok(match token {
                     RawToken::ExternalCommand(tag) => CommandSignature::LiteralExternal {
                         outer: token_tag,
@@ -488,6 +619,39 @@ impl ExpandSyntax for ClassifiedCommandShape {
 #[derive(Debug, Copy, Clone)]
 pub struct InternalCommandHeadShape;
 
+impl ColorSyntax for InternalCommandHeadShape {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        let peeked_head = token_nodes.peek_non_ws().not_eof("command head4");
+
+        let peeked_head = match peeked_head {
+            Err(_) => return,
+            Ok(peeked_head) => peeked_head,
+        };
+
+        let expr = match peeked_head.node {
+            TokenNode::Token(Tagged {
+                item: RawToken::Bare,
+                tag,
+            }) => shapes.push(FlatShape::Word.tagged(tag)),
+
+            TokenNode::Token(Tagged {
+                item: RawToken::String(inner_tag),
+                tag,
+            }) => shapes.push(FlatShape::String.tagged(tag)),
+
+            node => shapes.push(FlatShape::Error.tagged(peeked_head.node.tag())),
+        };
+
+        peeked_head.commit();
+    }
+}
+
 impl ExpandExpression for InternalCommandHeadShape {
     fn expand_expr(
         &self,
@@ -523,15 +687,33 @@ impl ExpandExpression for InternalCommandHeadShape {
     }
 }
 
+pub(crate) struct SingleError<'token> {
+    expected: &'static str,
+    node: &'token Tagged<RawToken>,
+}
+
+impl<'token> SingleError<'token> {
+    pub(crate) fn error(&self) -> ShellError {
+        ShellError::type_error(self.expected, self.node.type_name().tagged(self.node.tag))
+    }
+}
+
 fn parse_single_node<'a, 'b, T>(
     token_nodes: &'b mut TokensIterator<'a>,
     expected: &'static str,
-    callback: impl FnOnce(RawToken, Tag) -> Result<T, ShellError>,
+    callback: impl FnOnce(RawToken, Tag, SingleError) -> Result<T, ShellError>,
 ) -> Result<T, ShellError> {
     let peeked = token_nodes.peek_any().not_eof(expected)?;
 
     let expr = match peeked.node {
-        TokenNode::Token(token) => callback(token.item, token.tag())?,
+        TokenNode::Token(token) => callback(
+            token.item,
+            token.tag(),
+            SingleError {
+                expected,
+                node: token,
+            },
+        )?,
 
         other => return Err(ShellError::type_error(expected, other.tagged_type_name())),
     };
@@ -544,12 +726,19 @@ fn parse_single_node<'a, 'b, T>(
 fn parse_single_node_skipping_ws<'a, 'b, T>(
     token_nodes: &'b mut TokensIterator<'a>,
     expected: &'static str,
-    callback: impl FnOnce(RawToken, Tag) -> Result<T, ShellError>,
+    callback: impl FnOnce(RawToken, Tag, SingleError) -> Result<T, ShellError>,
 ) -> Result<T, ShellError> {
     let peeked = token_nodes.peek_non_ws().not_eof(expected)?;
 
     let expr = match peeked.node {
-        TokenNode::Token(token) => callback(token.item, token.tag())?,
+        TokenNode::Token(token) => callback(
+            token.item,
+            token.tag(),
+            SingleError {
+                expected,
+                node: token,
+            },
+        )?,
 
         other => return Err(ShellError::type_error(expected, other.tagged_type_name())),
     };
@@ -561,6 +750,32 @@ fn parse_single_node_skipping_ws<'a, 'b, T>(
 
 #[derive(Debug, Copy, Clone)]
 pub struct WhitespaceShape;
+
+impl ColorSyntax for WhitespaceShape {
+    type Info = ();
+
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        let peeked = token_nodes.peek_any().not_eof("whitespace");
+
+        let peeked = match peeked {
+            Err(_) => return,
+            Ok(peeked) => peeked,
+        };
+
+        let tag = match peeked.node {
+            TokenNode::Whitespace(tag) => shapes.push(FlatShape::Whitespace.tagged(tag)),
+
+            other => return,
+        };
+
+        peeked.commit();
+    }
+}
 
 impl ExpandSyntax for WhitespaceShape {
     type Output = Tag;
@@ -592,6 +807,19 @@ impl ExpandSyntax for WhitespaceShape {
 #[derive(Debug, Copy, Clone)]
 pub struct SpacedExpression<T: ExpandExpression> {
     inner: T,
+}
+
+impl<T: ExpandExpression> ColorSyntax for SpacedExpression<T> {
+    type Info = ();
+
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        unimplemented!()
+    }
 }
 
 impl<T: ExpandExpression> ExpandExpression for SpacedExpression<T> {
@@ -626,6 +854,35 @@ pub struct MaybeSpacedExpression<T: ExpandExpression> {
     inner: T,
 }
 
+impl<T: ExpandExpression> ColorSyntax for MaybeSpacedExpression<T> {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        let peeked = token_nodes.peek_any().not_eof("whitespace");
+
+        let peeked = match peeked {
+            Err(_) => return,
+            Ok(peeked) => peeked,
+        };
+
+        match peeked.node {
+            TokenNode::Whitespace(tag) => {
+                peeked.commit();
+                shapes.push(FlatShape::Whitespace.tagged(tag));
+            }
+
+            _ => {
+                peeked.rollback();
+                color_syntax(&self.inner, token_nodes, context, shapes);
+            }
+        }
+    }
+}
+
 impl<T: ExpandExpression> ExpandExpression for MaybeSpacedExpression<T> {
     fn expand_expr<'a, 'b>(
         &self,
@@ -658,5 +915,56 @@ fn expand_variable(tag: Tag, token_tag: Tag, source: &Text) -> hir::Expression {
         hir::Expression::it_variable(tag, token_tag)
     } else {
         hir::Expression::variable(tag, token_tag)
+    }
+}
+
+fn classify_command(
+    command: &Tagged<PipelineElement>,
+    context: &ExpandContext,
+    source: &Text,
+) -> Result<ClassifiedCommand, ShellError> {
+    let mut iterator = TokensIterator::new(&command.tokens.item, command.tag, true);
+
+    let head = CommandHeadShape.expand_syntax(&mut iterator, &context)?;
+
+    match &head {
+        CommandSignature::Expression(_) => Err(ShellError::syntax_error(
+            "Unexpected expression in command position".tagged(command.tag),
+        )),
+
+        // If the command starts with `^`, treat it as an external command no matter what
+        CommandSignature::External(name) => {
+            let name_str = name.slice(source);
+
+            external_command(&mut iterator, source, name_str.tagged(name))
+        }
+
+        CommandSignature::LiteralExternal { outer, inner } => {
+            let name_str = inner.slice(source);
+
+            external_command(&mut iterator, source, name_str.tagged(outer))
+        }
+
+        CommandSignature::Internal(command) => {
+            let tail =
+                parse_command_tail(&command.signature(), &context, &mut iterator, command.tag)?;
+
+            let (positional, named) = match tail {
+                None => (None, None),
+                Some((positional, named)) => (positional, named),
+            };
+
+            let call = hir::Call {
+                head: Box::new(head.to_expression()),
+                positional,
+                named,
+            };
+
+            Ok(ClassifiedCommand::Internal(InternalCommand::new(
+                command.name().to_string(),
+                command.tag,
+                call,
+            )))
+        }
     }
 }

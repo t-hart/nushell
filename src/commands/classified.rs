@@ -72,6 +72,7 @@ impl ClassifiedInputStream {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ClassifiedPipeline {
     pub(crate) commands: Vec<ClassifiedCommand>,
 }
@@ -253,7 +254,11 @@ impl ExternalCommand {
                             tag,
                         ));
                     } else {
-                        return Err(ShellError::string("Error: $it needs string data"));
+                        return Err(ShellError::labeled_error(
+                            "Error: $it needs string data",
+                            "given something else",
+                            name_tag,
+                        ));
                     }
                 }
                 if !first {

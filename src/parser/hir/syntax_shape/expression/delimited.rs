@@ -1,38 +1,44 @@
-use crate::parser::hir::syntax_shape::{expand_syntax, ExpandContext, ExpressionListShape};
-use crate::parser::{hir, hir::TokensIterator};
-use crate::parser::{DelimitedNode, Delimiter};
+use crate::parser::hir::syntax_shape::{
+    color_syntax, expand_syntax, ExpandContext, ExpressionListShape, TokenNode,
+};
+use crate::parser::{hir, hir::TokensIterator, Delimiter, FlatShape};
 use crate::prelude::*;
 
-pub fn expand_delimited_expr(
-    delimited: &Tagged<DelimitedNode>,
+pub fn expand_delimited_square(
+    children: &Vec<TokenNode>,
+    tag: Tag,
     context: &ExpandContext,
 ) -> Result<hir::Expression, ShellError> {
-    match &delimited.item {
-        DelimitedNode {
-            delimiter: Delimiter::Square,
-            children,
-        } => {
-            let mut tokens = TokensIterator::new(&children, delimited.tag, false);
+    let mut tokens = TokensIterator::new(&children, tag, false);
 
-            let list = expand_syntax(&ExpressionListShape, &mut tokens, context);
+    let list = expand_syntax(&ExpressionListShape, &mut tokens, context);
 
-            Ok(hir::Expression::list(list?, delimited.tag))
-        }
+    Ok(hir::Expression::list(list?, tag))
+}
 
-        DelimitedNode {
-            delimiter: Delimiter::Paren,
-            ..
-        } => Err(ShellError::type_error(
-            "expression",
-            "unimplemented call expression".tagged(delimited.tag),
-        )),
+pub fn color_delimited_square(
+    (open, close): (Tag, Tag),
+    children: &Vec<TokenNode>,
+    tag: Tag,
+    context: &ExpandContext,
+    shapes: &mut Vec<Tagged<FlatShape>>,
+) {
+    shapes.push(FlatShape::OpenDelimiter(Delimiter::Square).tagged(open));
+    let mut tokens = TokensIterator::new(&children, tag, false);
+    let list = color_syntax(&ExpressionListShape, &mut tokens, context, shapes);
+    shapes.push(FlatShape::CloseDelimiter(Delimiter::Square).tagged(close));
+}
 
-        DelimitedNode {
-            delimiter: Delimiter::Brace,
-            ..
-        } => Err(ShellError::type_error(
-            "expression",
-            "unimplemented block expression".tagged(delimited.tag),
-        )),
-    }
+pub fn color_delimited_brace(
+    (open, close): (Tag, Tag),
+    children: &[TokenNode],
+    tag: Tag,
+    context: &ExpandContext,
+    shapes: &mut Vec<Tagged<FlatShape>>,
+) {
+    shapes.push(FlatShape::OpenDelimiter(Delimiter::Brace).tagged(open));
+    let mut tokens = TokensIterator::new(&children, tag, false);
+
+    let list = color_syntax(&ExpressionListShape, &mut tokens, context, shapes);
+    shapes.push(FlatShape::OpenDelimiter(Delimiter::Brace).tagged(close));
 }
