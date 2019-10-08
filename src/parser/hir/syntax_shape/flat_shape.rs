@@ -1,6 +1,7 @@
 use crate::parser::{Delimiter, Flag, FlagKind, Operator, RawNumber, RawToken, TokenNode};
 use crate::{Tag, Tagged, TaggedItem, Text};
 
+#[derive(Debug, Copy, Clone)]
 pub enum FlatShape {
     OpenDelimiter(Delimiter),
     CloseDelimiter(Delimiter),
@@ -8,7 +9,7 @@ pub enum FlatShape {
     Variable,
     Operator,
     Dot,
-    CommandHead,
+    InternalCommand,
     ExternalCommand,
     ExternalWord,
     BareMember,

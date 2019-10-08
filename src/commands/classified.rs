@@ -118,15 +118,19 @@ impl InternalCommand {
 
         let command = context.expect_command(&self.name);
 
-        let result = context.run_command(
-            command,
-            self.name_tag.clone(),
-            context.source_map.clone(),
-            self.args,
-            &source,
-            objects,
-            is_first_command,
-        );
+        let result = {
+            let source_map = context.source_map.lock().unwrap().clone();
+
+            context.run_command(
+                command,
+                self.name_tag.clone(),
+                source_map,
+                self.args,
+                &source,
+                objects,
+                is_first_command,
+            )
+        };
 
         let result = trace_out_stream!(target: "nu::trace_stream::internal", source: &source, "output" = result);
         let mut result = result.values;

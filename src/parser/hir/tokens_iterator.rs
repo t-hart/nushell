@@ -135,6 +135,10 @@ impl<'content> TokensIterator<'content> {
         TokensIterator::new(tokens, tag, false)
     }
 
+    pub fn len(&self) -> usize {
+        self.tokens.len()
+    }
+
     pub fn spanned<T>(
         &mut self,
         block: impl FnOnce(&mut TokensIterator<'content>) -> T,
@@ -267,6 +271,10 @@ impl<'content> TokensIterator<'content> {
         self.index = to;
     }
 
+    pub fn pos(&self, skip_ws: bool) -> Option<usize> {
+        peek_pos(self, skip_ws)
+    }
+
     pub fn debug_remaining(&self) -> Vec<TokenNode> {
         let mut tokens = self.clone();
         tokens.restart();
@@ -311,6 +319,37 @@ fn peek<'content, 'me>(
             _ => {
                 return Some(node);
             }
+        }
+    }
+}
+
+fn peek_pos<'content, 'me>(
+    iterator: &'me TokensIterator<'content>,
+    skip_ws: bool,
+) -> Option<usize> {
+    let mut to = iterator.index;
+
+    loop {
+        if to >= iterator.tokens.len() {
+            return None;
+        }
+
+        if iterator.seen.contains(&to) {
+            to += 1;
+            continue;
+        }
+
+        if to >= iterator.tokens.len() {
+            return None;
+        }
+
+        let node = &iterator.tokens[to];
+
+        match node {
+            TokenNode::Whitespace(_) if skip_ws => {
+                to += 1;
+            }
+            _ => return Some(to),
         }
     }
 }

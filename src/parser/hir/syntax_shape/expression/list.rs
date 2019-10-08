@@ -2,8 +2,8 @@ use crate::errors::ShellError;
 use crate::parser::{
     hir,
     hir::syntax_shape::{
-        color_syntax, expand_expr, maybe_spaced, spaced, AnyExpressionShape, ColorSyntax,
-        ExpandContext, ExpandSyntax,
+        color_syntax, expand_atom, expand_expr, maybe_spaced, spaced, AnyExpressionShape,
+        ColorSyntax, ExpandContext, ExpandSyntax, ExpansionRule,
     },
     hir::{debug_tokens, TokensIterator},
     FlatShape,
@@ -52,23 +52,51 @@ impl ColorSyntax for ExpressionListShape {
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) {
-        if token_nodes.at_end_possible_ws() {
-            return;
-        }
-
-        color_syntax(
-            &maybe_spaced(AnyExpressionShape),
-            token_nodes,
-            context,
-            shapes,
-        );
+        let mut backoff = false;
 
         loop {
             if token_nodes.at_end_possible_ws() {
                 return;
             }
 
-            color_syntax(&spaced(AnyExpressionShape), token_nodes, context, shapes);
+            if backoff {
+                let (seen, _) = color_syntax(&SimplestExpression, token_nodes, context, shapes);
+
+                if !seen && !token_nodes.at_end() {
+                    panic!("Unexpected tokens left that couldn't be colored even with SimplestExpression")
+                }
+            } else {
+                let (seen, _) =
+                    color_syntax(&spaced(AnyExpressionShape), token_nodes, context, shapes);
+
+                backoff = !seen;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct SimplestExpression;
+
+impl ColorSyntax for SimplestExpression {
+    type Info = ();
+
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        let atom = expand_atom(
+            token_nodes,
+            "any token",
+            context,
+            ExpansionRule::permissive(),
+        );
+
+        match atom {
+            Err(_) => {}
+            Ok(atom) => atom.color_tokens(shapes),
         }
     }
 }

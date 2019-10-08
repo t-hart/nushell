@@ -67,6 +67,9 @@ pub enum AtomicToken<'tokens> {
     Dot {
         text: Tag,
     },
+    Operator {
+        text: Tag,
+    },
     Whitespace {
         text: Tag,
     },
@@ -81,6 +84,12 @@ impl<'tokens> TaggedAtomicToken<'tokens> {
         expected: &'static str,
     ) -> Result<hir::Expression, ShellError> {
         Ok(match &self.item {
+            AtomicToken::Operator { .. } => {
+                return Err(ShellError::type_error(
+                    expected,
+                    "operator".tagged(self.tag),
+                ))
+            }
             AtomicToken::ShorthandFlag { .. } => {
                 return Err(ShellError::type_error(
                     expected,
@@ -124,6 +133,9 @@ impl<'tokens> TaggedAtomicToken<'tokens> {
 
     pub(crate) fn color_tokens(&self, shapes: &mut Vec<Tagged<FlatShape>>) {
         match &self.item {
+            AtomicToken::Operator { text } => {
+                return shapes.push(FlatShape::Operator.tagged(text));
+            }
             AtomicToken::ShorthandFlag { name } => {
                 return shapes.push(FlatShape::ShorthandFlag.tagged(name));
             }
@@ -170,16 +182,16 @@ impl<'tokens> TaggedAtomicToken<'tokens> {
             }
             AtomicToken::Word { text } => return shapes.push(FlatShape::Word.tagged(text)),
             AtomicToken::SquareDelimited { .. } => {
-                unreachable!("BUG: handle nested tokens before calling into_hir")
+                unreachable!("BUG: handle nested tokens before calling color_tokens")
             }
             AtomicToken::ParenDelimited { .. } => {
-                unreachable!("BUG: handle nested tokens before calling into_hir")
+                unreachable!("BUG: handle nested tokens before calling color_tokens")
             }
             AtomicToken::BraceDelimited { .. } => {
-                unreachable!("BUG: handle nested tokens before calling into_hir")
+                unreachable!("BUG: handle nested tokens before calling color_tokens")
             }
             AtomicToken::Pipeline { .. } => {
-                unreachable!("BUG: handle nested tokens before calling into_hir")
+                unreachable!("BUG: handle nested tokens before calling color_tokens")
             }
         }
     }
@@ -191,48 +203,63 @@ pub enum WhitespaceHandling {
     AllowWhitespace,
     RejectWhitespace,
     #[allow(unused)]
-    RequireWhitespace,
+    SkipWhitespace,
 }
 
 #[derive(Debug)]
 pub struct ExpansionRule {
-    pub(crate) expand_bare_path: bool,
     pub(crate) allow_external_command: bool,
     pub(crate) allow_external_word: bool,
+    pub(crate) allow_operator: bool,
     pub(crate) treat_size_as_word: bool,
+    pub(crate) commit_errors: bool,
     pub(crate) whitespace: WhitespaceHandling,
 }
 
 impl ExpansionRule {
     pub fn new() -> ExpansionRule {
         ExpansionRule {
-            expand_bare_path: false,
             allow_external_command: false,
             allow_external_word: false,
+            allow_operator: false,
             treat_size_as_word: false,
+            commit_errors: false,
             whitespace: WhitespaceHandling::RejectWhitespace,
         }
     }
 
     pub fn permissive() -> ExpansionRule {
         ExpansionRule {
-            expand_bare_path: false,
             allow_external_command: true,
             allow_external_word: true,
+            allow_operator: true,
             treat_size_as_word: false,
+            commit_errors: true,
             whitespace: WhitespaceHandling::RejectWhitespace,
         }
     }
 
     #[allow(unused)]
-    pub fn expand_bare_path(mut self) -> ExpansionRule {
-        self.expand_bare_path = true;
+    pub fn allow_external_command(mut self) -> ExpansionRule {
+        self.allow_external_command = true;
         self
     }
 
     #[allow(unused)]
-    pub fn allow_external_command(mut self) -> ExpansionRule {
-        self.allow_external_command = true;
+    pub fn allow_operator(mut self) -> ExpansionRule {
+        self.allow_operator = true;
+        self
+    }
+
+    #[allow(unused)]
+    pub fn no_operator(mut self) -> ExpansionRule {
+        self.allow_operator = false;
+        self
+    }
+
+    #[allow(unused)]
+    pub fn no_external_command(mut self) -> ExpansionRule {
+        self.allow_external_command = false;
         self
     }
 
@@ -243,8 +270,20 @@ impl ExpansionRule {
     }
 
     #[allow(unused)]
+    pub fn no_external_word(mut self) -> ExpansionRule {
+        self.allow_external_word = false;
+        self
+    }
+
+    #[allow(unused)]
     pub fn treat_size_as_word(mut self) -> ExpansionRule {
         self.treat_size_as_word = true;
+        self
+    }
+
+    #[allow(unused)]
+    pub fn commit_errors(mut self) -> ExpansionRule {
+        self.commit_errors = true;
         self
     }
 
@@ -255,8 +294,14 @@ impl ExpansionRule {
     }
 
     #[allow(unused)]
-    pub fn require_whitespace(mut self) -> ExpansionRule {
-        self.whitespace = WhitespaceHandling::RequireWhitespace;
+    pub fn reject_whitespace(mut self) -> ExpansionRule {
+        self.whitespace = WhitespaceHandling::RejectWhitespace;
+        self
+    }
+
+    #[allow(unused)]
+    pub fn skip_whitespace(mut self) -> ExpansionRule {
+        self.whitespace = WhitespaceHandling::SkipWhitespace;
         self
     }
 }
@@ -280,44 +325,54 @@ pub fn expand_atom<'me, 'content>(
         },
     }
 
-    match rule.expand_bare_path {
-        true => return Err(ShellError::unimplemented("expand_atom ExpandBarePath")),
-        false => {
-            let word = expand_syntax(&BarePathShape, token_nodes, context);
-
-            match word {
-                Ok(word) => return Ok(AtomicToken::Word { text: word }.tagged(word)),
-                Err(_) => {}
-            }
-        }
-    }
-
     let peeked = token_nodes.peek_any().not_eof(expected)?;
 
-    match peeked.node {
-        TokenNode::Delimited(Tagged {
-            item:
-                DelimitedNode {
-                    delimiter: Delimiter::Square,
-                    tags,
-                    children,
-                },
-            tag,
-        }) => {
-            peeked.commit();
-            return Ok(AtomicToken::SquareDelimited {
-                nodes: children,
-                tags: *tags,
+    loop {
+        match peeked.node {
+            TokenNode::Delimited(Tagged {
+                item:
+                    DelimitedNode {
+                        delimiter: Delimiter::Square,
+                        tags,
+                        children,
+                    },
+                tag,
+            }) => {
+                peeked.commit();
+                return Ok(AtomicToken::SquareDelimited {
+                    nodes: children,
+                    tags: *tags,
+                }
+                .tagged(tag));
             }
-            .tagged(tag));
-        }
 
-        _ => {}
+            TokenNode::Whitespace(tag) => match rule.whitespace {
+                WhitespaceHandling::AllowWhitespace => {
+                    peeked.commit();
+                    return Ok(AtomicToken::Whitespace { text: *tag }.tagged(tag));
+                }
+
+                WhitespaceHandling::SkipWhitespace => {
+                    unimplemented!("WhitespaceHandling::SkipWhitespace")
+                }
+
+                WhitespaceHandling::RejectWhitespace => {
+                    return Err(ShellError::syntax_error(
+                        "Unexpected whitespace".tagged(tag),
+                    ))
+                }
+            },
+
+            _ => break,
+        }
     }
 
     parse_single_node(token_nodes, expected, |token, token_tag, err| {
         Ok(match token {
             RawToken::Number(number) => AtomicToken::Number { number }.tagged(token_tag),
+            RawToken::Operator(_) if rule.allow_operator => {
+                AtomicToken::Operator { text: token_tag }.tagged(token_tag)
+            }
             RawToken::Operator(Operator::Dot) => return Err(err.error()),
             RawToken::Operator(_) => return Err(err.error()),
             RawToken::String(body) => AtomicToken::String { body }.tagged(token_tag),

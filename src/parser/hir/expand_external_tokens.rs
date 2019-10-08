@@ -1,5 +1,10 @@
 use crate::errors::ShellError;
-use crate::parser::{TokenNode, TokensIterator};
+use crate::parser::{
+    hir::syntax_shape::{
+        color_syntax, expand_atom, spaced, ColorSyntax, ExpandContext, ExpansionRule,
+    },
+    FlatShape, TokenNode, TokensIterator,
+};
 use crate::{Tag, Tagged, Text};
 
 pub fn expand_external_tokens(
@@ -17,6 +22,47 @@ pub fn expand_external_tokens(
     }
 
     Ok(out)
+}
+
+pub fn color_external_tokens(
+    token_nodes: &mut TokensIterator<'_>,
+    context: &ExpandContext,
+    shapes: &mut Vec<Tagged<FlatShape>>,
+) -> bool {
+    let len = shapes.len();
+
+    loop {
+        let (seen, _) = color_syntax(&spaced(ExternalExpression), token_nodes, context, shapes);
+
+        if !seen {
+            break;
+        }
+    }
+
+    shapes.len() > len
+}
+
+#[derive(Debug, Copy, Clone)]
+struct ExternalExpression;
+
+impl ColorSyntax for ExternalExpression {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        loop {
+            let (seen, _) = color_syntax(&ExternalContinuation, token_nodes, context, shapes);
+
+            eprintln!("{:?}", seen);
+
+            if !seen {
+                return;
+            }
+        }
+    }
 }
 
 pub fn expand_next_expression(
@@ -83,4 +129,29 @@ fn triage_continuation<'a, 'b>(
 
     peeked.commit();
     Ok(Some(node.tag()))
+}
+
+#[derive(Debug, Copy, Clone)]
+struct ExternalContinuation;
+
+impl ColorSyntax for ExternalContinuation {
+    type Info = ();
+    fn color_syntax<'a, 'b>(
+        &self,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        let atom = match expand_atom(
+            token_nodes,
+            "external word",
+            context,
+            ExpansionRule::permissive(),
+        ) {
+            Err(_) => return,
+            Ok(atom) => atom,
+        };
+
+        atom.color_tokens(shapes);
+    }
 }

@@ -325,6 +325,7 @@ pub async fn cli() -> Result<(), Box<dyn Error>> {
             )]);
         }
     }
+
     let _ = load_plugins(&mut context);
 
     let config = Config::builder().color_mode(ColorMode::Forced).build();
@@ -353,9 +354,7 @@ pub async fn cli() -> Result<(), Box<dyn Error>> {
 
         let cwd = context.shell_manager.path();
 
-        rl.set_helper(Some(crate::shell::Helper::new(
-            context.shell_manager.clone(),
-        )));
+        rl.set_helper(Some(crate::shell::Helper::new(context.clone())));
 
         let edit_mode = config::config(Tag::unknown())?
             .get("edit_mode")

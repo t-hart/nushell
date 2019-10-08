@@ -90,9 +90,22 @@ pub(crate) fn continue_coloring_expression(
         // Check to see whether there's any continuation after the head expression
         let (seen, _) = color_syntax(&ExpressionContinuationShape, token_nodes, context, shapes);
 
-        if !seen {
+        if !seen || is_error(shapes) {
             return;
         }
+    }
+}
+
+fn is_error(shapes: &mut Vec<Tagged<FlatShape>>) -> bool {
+    let last = shapes.iter().last();
+
+    match last {
+        None => false,
+        Some(Tagged {
+            item: FlatShape::Error,
+            ..
+        }) => true,
+        _ => false,
     }
 }
 
@@ -139,7 +152,12 @@ impl ColorSyntax for AnyExpressionStartShape {
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) {
         let atom = token_nodes.spanned(|token_nodes| {
-            expand_atom(token_nodes, "expression", context, ExpansionRule::new())
+            expand_atom(
+                token_nodes,
+                "expression",
+                context,
+                ExpansionRule::permissive(),
+            )
         });
 
         let atom = match atom {
@@ -170,7 +188,7 @@ impl ColorSyntax for AnyExpressionStartShape {
             }
 
             AtomicToken::Word { .. } | AtomicToken::Dot { .. } => {
-                color_syntax(&BareTailShape, token_nodes, context, shapes);
+                shapes.push(FlatShape::Word.tagged(atom.tag));
             }
 
             _ => atom.color_tokens(shapes),

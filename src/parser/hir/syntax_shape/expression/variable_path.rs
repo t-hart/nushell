@@ -181,6 +181,7 @@ impl ExpandSyntax for ExpressionContinuationShape {
 pub enum ContinuationInfo {
     Dot,
     Infix,
+    End,
 }
 
 impl ColorSyntax for ExpressionContinuationShape {
@@ -191,23 +192,44 @@ impl ColorSyntax for ExpressionContinuationShape {
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> ContinuationInfo {
+        if token_nodes.at_end_possible_ws() {
+            return ContinuationInfo::End;
+        }
+
+        let checkpoint = token_nodes.checkpoint();
+
         // Try to expand a `.`
         let (seen, _) = color_syntax(
             &ColorableDotShape { in_bare: false },
-            token_nodes,
+            checkpoint.iterator,
             context,
             shapes,
         );
 
         if seen {
-            color_syntax(&MemberShape, token_nodes, context, shapes);
-            ContinuationInfo::Dot
-        } else {
-            // TODO: error correction
-            color_syntax(&InfixShape, token_nodes, context, shapes);
-            color_syntax(&AnyExpressionShape, token_nodes, context, shapes);
+            let (seen, _) = color_syntax(&MemberShape, checkpoint.iterator, context, shapes);
 
-            ContinuationInfo::Infix
+            if seen {
+                checkpoint.commit();
+                ContinuationInfo::Dot
+            } else {
+                ContinuationInfo::End
+            }
+        } else {
+            let (seen, _) = color_syntax(&InfixShape, checkpoint.iterator, context, shapes);
+
+            if !seen {
+                return ContinuationInfo::End;
+            }
+
+            let (seen, _) = color_syntax(&AnyExpressionShape, checkpoint.iterator, context, shapes);
+
+            if seen {
+                checkpoint.commit();
+                ContinuationInfo::Infix
+            } else {
+                ContinuationInfo::End
+            }
         }
     }
 }
@@ -567,12 +589,13 @@ impl ColorSyntax for InfixShape {
         &self,
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
-        shapes: &mut Vec<Tagged<FlatShape>>,
+        outer_shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Self::Info {
         let checkpoint = token_nodes.checkpoint();
+        let mut shapes = vec![];
 
         // An infix operator must be prefixed by whitespace
-        let (seen, _) = color_syntax(&WhitespaceShape, checkpoint.iterator, context, shapes);
+        let (seen, _) = color_syntax(&WhitespaceShape, checkpoint.iterator, context, &mut shapes);
 
         if !seen {
             return;
@@ -601,12 +624,13 @@ impl ColorSyntax for InfixShape {
         }
 
         // An infix operator must be followed by whitespace
-        let (seen, _) = color_syntax(&WhitespaceShape, checkpoint.iterator, context, shapes);
+        let (seen, _) = color_syntax(&WhitespaceShape, checkpoint.iterator, context, &mut shapes);
 
         if !seen {
             return;
         }
 
+        outer_shapes.extend(shapes);
         checkpoint.commit();
     }
 }

@@ -1,10 +1,12 @@
+use crate::context::Context;
+use crate::parser::hir::syntax_shape::{color_syntax, PipelineShape};
 use crate::parser::hir::TokensIterator;
 use crate::parser::nom_input;
 use crate::parser::parse::token_tree::TokenNode;
 use crate::parser::parse::tokens::RawToken;
 use crate::parser::{Pipeline, PipelineElement};
 use crate::shell::shell_manager::ShellManager;
-use crate::Tagged;
+use crate::{Tag, Tagged, TaggedItem, Text};
 use ansi_term::Color;
 use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
@@ -13,12 +15,12 @@ use rustyline::hint::Hinter;
 use std::borrow::Cow::{self, Owned};
 
 pub(crate) struct Helper {
-    helper: ShellManager,
+    context: Context,
 }
 
 impl Helper {
-    pub(crate) fn new(helper: ShellManager) -> Helper {
-        Helper { helper }
+    pub(crate) fn new(context: Context) -> Helper {
+        Helper { context }
     }
 }
 
@@ -30,7 +32,7 @@ impl Completer for Helper {
         pos: usize,
         ctx: &rustyline::Context<'_>,
     ) -> Result<(usize, Vec<rustyline::completion::Pair>), ReadlineError> {
-        self.helper.complete(line, pos, ctx)
+        self.context.shell_manager.complete(line, pos, ctx)
     }
 }
 
@@ -53,7 +55,7 @@ impl Completer for Helper {
 
 impl Hinter for Helper {
     fn hint(&self, line: &str, pos: usize, ctx: &rustyline::Context<'_>) -> Option<String> {
-        self.helper.hint(line, pos, ctx)
+        self.context.shell_manager.hint(line, pos, ctx)
     }
 }
 
@@ -78,8 +80,19 @@ impl Highlighter for Helper {
                     Ok(v) => v,
                 };
 
-                let Pipeline { parts } = pipeline;
+                let Pipeline { parts } = pipeline.clone();
                 let mut iter = parts.into_iter();
+
+                let tokens = vec![TokenNode::Pipeline(pipeline.clone().tagged(v.tag()))];
+                let mut tokens = TokensIterator::all(&tokens[..], v.tag());
+
+                let text = Text::from(line);
+                let expand_context = self
+                    .context
+                    .expand_context(&text, Tag::from((0, line.len() - 1)));
+                let mut shapes = vec![];
+                color_syntax(&PipelineShape, &mut tokens, &expand_context, &mut shapes);
+                eprintln!("{:?}", shapes);
 
                 loop {
                     match iter.next() {
@@ -99,6 +112,17 @@ impl Highlighter for Helper {
     fn highlight_char(&self, _line: &str, _pos: usize) -> bool {
         true
     }
+}
+
+fn vec_tag<T>(input: Vec<Tagged<T>>) -> Option<Tag> {
+    let mut iter = input.iter();
+    let first = iter.next()?.tag;
+    let last = iter.last();
+
+    Some(match last {
+        None => first,
+        Some(last) => first.until(last.tag),
+    })
 }
 
 fn paint_token_node(token_node: &TokenNode, line: &str) -> String {

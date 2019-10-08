@@ -1,4 +1,5 @@
-use crate::Tag;
+use crate::parser::hir::syntax_shape::flat_shape::FlatShape;
+use crate::{Tag, Tagged, TaggedItem};
 use derive_new::new;
 use getset::Getters;
 use serde::{Deserialize, Serialize};
@@ -14,4 +15,13 @@ pub enum FlagKind {
 pub struct Flag {
     pub(crate) kind: FlagKind,
     pub(crate) name: Tag,
+}
+
+impl Tagged<Flag> {
+    pub fn color(&self) -> Tagged<FlatShape> {
+        match self.item.kind {
+            FlagKind::Longhand => FlatShape::Flag.tagged(self.tag),
+            FlagKind::Shorthand => FlatShape::ShorthandFlag.tagged(self.tag),
+        }
+    }
 }
