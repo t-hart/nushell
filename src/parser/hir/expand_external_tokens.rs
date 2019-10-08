@@ -56,8 +56,6 @@ impl ColorSyntax for ExternalExpression {
         loop {
             let (seen, _) = color_syntax(&ExternalContinuation, token_nodes, context, shapes);
 
-            eprintln!("{:?}", seen);
-
             if !seen {
                 return;
             }

@@ -325,6 +325,11 @@ pub fn expand_atom<'me, 'content>(
         },
     }
 
+    match expand_syntax(&BarePathShape, token_nodes, context) {
+        Err(_) => {}
+        Ok(tag) => return Ok(AtomicToken::Word { text: tag }.tagged(tag)),
+    }
+
     let peeked = token_nodes.peek_any().not_eof(expected)?;
 
     loop {

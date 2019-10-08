@@ -296,9 +296,7 @@ pub fn color_command_tail(
         }
     }
 
-    eprintln!("{:#?}", args);
     args.spread_shapes(shapes);
-    eprintln!("{:#?}", shapes);
 }
 
 fn extract_switch(name: &str, tokens: &mut hir::TokensIterator<'_>, source: &Text) -> Option<Flag> {
