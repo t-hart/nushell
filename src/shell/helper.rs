@@ -89,10 +89,9 @@ impl Highlighter for Helper {
                 let text = Text::from(line);
                 let expand_context = self
                     .context
-                    .expand_context(&text, Tag::from((0, line.len() - 1)));
+                    .expand_context(&text, Tag::from((0, line.len() - 1, uuid::Uuid::nil())));
                 let mut shapes = vec![];
                 color_syntax(&PipelineShape, &mut tokens, &expand_context, &mut shapes);
-                eprintln!("{:?}", shapes);
 
                 loop {
                     match iter.next() {
