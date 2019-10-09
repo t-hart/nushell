@@ -304,8 +304,8 @@ impl TokenTreeBuilder {
     fn consume_delimiter(
         &mut self,
         input: Vec<CurriedToken>,
-        open: &str,
-        close: &str,
+        _open: &str,
+        _close: &str,
     ) -> (Tag, Tag, Tag, Vec<TokenNode>) {
         let (start_open_paren, end_open_paren) = self.consume("(");
         let mut output = vec![];

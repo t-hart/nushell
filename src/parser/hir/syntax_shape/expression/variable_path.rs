@@ -284,9 +284,9 @@ impl ColorSyntax for VariableShape {
         };
 
         match atom.item {
-            AtomicToken::Variable { name } => shapes.push(FlatShape::Variable.tagged(atom.tag)),
-            AtomicToken::ItVariable { name } => shapes.push(FlatShape::ItVariable.tagged(atom.tag)),
-            other => return,
+            AtomicToken::Variable { name: _ } => shapes.push(FlatShape::Variable.tagged(atom.tag)),
+            AtomicToken::ItVariable { name: _ } => shapes.push(FlatShape::ItVariable.tagged(atom.tag)),
+            _other => return,
         }
     }
 }
@@ -417,9 +417,9 @@ impl ColorSyntax for ColumnPathShape {
     type Info = ();
     fn color_syntax<'a, 'b>(
         &self,
-        token_nodes: &'b mut TokensIterator<'a>,
-        context: &ExpandContext,
-        shapes: &mut Vec<Tagged<FlatShape>>,
+        _token_nodes: &'b mut TokensIterator<'a>,
+        _context: &ExpandContext,
+        _shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Self::Info {
         unimplemented!()
     }
@@ -520,7 +520,7 @@ impl ColorSyntax for ColorableDotShape {
     fn color_syntax<'a, 'b>(
         &self,
         token_nodes: &'b mut TokensIterator<'a>,
-        context: &ExpandContext,
+        _context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Self::Info {
         let peeked = token_nodes.peek_any().not_eof("dot");

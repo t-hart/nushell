@@ -25,7 +25,7 @@ pub fn color_delimited_square(
 ) {
     shapes.push(FlatShape::OpenDelimiter(Delimiter::Square).tagged(open));
     let mut tokens = TokensIterator::new(&children, tag, false);
-    let list = color_syntax(&ExpressionListShape, &mut tokens, context, shapes);
+    let _list = color_syntax(&ExpressionListShape, &mut tokens, context, shapes);
     shapes.push(FlatShape::CloseDelimiter(Delimiter::Square).tagged(close));
 }
 
@@ -39,6 +39,6 @@ pub fn color_delimited_brace(
     shapes.push(FlatShape::OpenDelimiter(Delimiter::Brace).tagged(open));
     let mut tokens = TokensIterator::new(&children, tag, false);
 
-    let list = color_syntax(&ExpressionListShape, &mut tokens, context, shapes);
+    let _list = color_syntax(&ExpressionListShape, &mut tokens, context, shapes);
     shapes.push(FlatShape::OpenDelimiter(Delimiter::Brace).tagged(close));
 }

@@ -510,7 +510,7 @@ impl ColorSyntax for PipelineShape {
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Self::Info {
-        let source = context.source;
+        let _source = context.source;
 
         let peeked = token_nodes.peek_any().not_eof("pipeline");
 
@@ -596,7 +596,7 @@ impl ColorSyntax for CommandHeadShape {
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Self::Info {
-        let mut checkpoint = token_nodes.checkpoint();
+        let checkpoint = token_nodes.checkpoint();
 
         let atom = match expand_atom(
             checkpoint.iterator,
@@ -741,7 +741,7 @@ impl ColorSyntax for InternalCommandHeadShape {
     fn color_syntax<'a, 'b>(
         &self,
         token_nodes: &'b mut TokensIterator<'a>,
-        context: &ExpandContext,
+        _context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Self::Info {
         let peeked_head = token_nodes.peek_non_ws().not_eof("command head4");
@@ -751,18 +751,18 @@ impl ColorSyntax for InternalCommandHeadShape {
             Ok(peeked_head) => peeked_head,
         };
 
-        let expr = match peeked_head.node {
+        let _expr = match peeked_head.node {
             TokenNode::Token(Tagged {
                 item: RawToken::Bare,
                 tag,
             }) => shapes.push(FlatShape::Word.tagged(tag)),
 
             TokenNode::Token(Tagged {
-                item: RawToken::String(inner_tag),
+                item: RawToken::String(_inner_tag),
                 tag,
             }) => shapes.push(FlatShape::String.tagged(tag)),
 
-            node => shapes.push(FlatShape::Error.tagged(peeked_head.node.tag())),
+            _node => shapes.push(FlatShape::Error.tagged(peeked_head.node.tag())),
         };
 
         peeked_head.commit();
@@ -874,7 +874,7 @@ impl ColorSyntax for WhitespaceShape {
     fn color_syntax<'a, 'b>(
         &self,
         token_nodes: &'b mut TokensIterator<'a>,
-        context: &ExpandContext,
+        _context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Self::Info {
         let peeked = token_nodes.peek_any().not_eof("whitespace");
@@ -884,10 +884,10 @@ impl ColorSyntax for WhitespaceShape {
             Ok(peeked) => peeked,
         };
 
-        let tag = match peeked.node {
+        let _tag = match peeked.node {
             TokenNode::Whitespace(tag) => shapes.push(FlatShape::Whitespace.tagged(tag)),
 
-            other => return,
+            _other => return,
         };
 
         peeked.commit();
@@ -1124,7 +1124,7 @@ impl ColorSyntax for CommandShape {
                 color_external_tokens(token_nodes, context, shapes);
             }
 
-            CommandHeadKind::Internal(signature, name) => {
+            CommandHeadKind::Internal(signature, _name) => {
                 color_command_tail(&signature, &context, token_nodes, shapes);
             }
         }

@@ -56,7 +56,7 @@ impl ColorSyntax for NumberShape {
             }
             Tagged {
                 item: Ok(atom),
-                tag,
+                ..
             } => atom,
         };
 
@@ -112,7 +112,7 @@ impl ColorSyntax for IntShape {
             }
             Tagged {
                 item: Ok(atom),
-                tag,
+                ..
             } => atom,
         };
 

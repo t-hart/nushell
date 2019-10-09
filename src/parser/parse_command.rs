@@ -219,7 +219,7 @@ pub fn color_command_tail(
             }
             NamedType::Optional(syntax_type) => {
                 match extract_optional(name, tail, context.source()) {
-                    Err(err) => {}
+                    Err(_) => {}
                     Ok(Some((pos, flag))) => {
                         let mut shapes = vec![flag.color()];
                         tail.move_to(pos);

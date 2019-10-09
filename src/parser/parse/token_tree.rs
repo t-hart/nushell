@@ -77,7 +77,7 @@ impl fmt::Debug for DebugTokenNode<'_> {
                 )
             }
             TokenNode::Pipeline(pipeline) => write!(f, "{}", pipeline.debug(self.source)),
-            TokenNode::Error(s) => write!(f, "<error>"),
+            TokenNode::Error(_) => write!(f, "<error>"),
             rest => write!(f, "{}", rest.tag().slice(self.source)),
         }
     }

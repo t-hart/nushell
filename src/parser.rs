@@ -13,7 +13,6 @@ pub(crate) use parse::call_node::CallNode;
 pub(crate) use parse::files::Files;
 pub(crate) use parse::flag::{Flag, FlagKind};
 pub(crate) use parse::operator::Operator;
-pub(crate) use parse::parser::Number;
 pub(crate) use parse::parser::{nom_input, pipeline};
 pub(crate) use parse::pipeline::{Pipeline, PipelineElement};
 pub(crate) use parse::text::Text;

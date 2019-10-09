@@ -162,7 +162,7 @@ impl ColorSyntax for AnyExpressionStartShape {
 
         let atom = match atom {
             Tagged {
-                item: Err(err),
+                item: Err(_err),
                 tag,
             } => {
                 shapes.push(FlatShape::Error.tagged(tag));

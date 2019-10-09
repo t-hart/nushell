@@ -5,7 +5,6 @@ use crate::parser::nom_input;
 use crate::parser::parse::token_tree::TokenNode;
 use crate::parser::parse::tokens::RawToken;
 use crate::parser::{Pipeline, PipelineElement};
-use crate::shell::shell_manager::ShellManager;
 use crate::{Tag, Tagged, TaggedItem, Text};
 use ansi_term::Color;
 use rustyline::completion::Completer;
@@ -113,6 +112,7 @@ impl Highlighter for Helper {
     }
 }
 
+#[allow(unused)]
 fn vec_tag<T>(input: Vec<Tagged<T>>) -> Option<Tag> {
     let mut iter = input.iter();
     let first = iter.next()?.tag;

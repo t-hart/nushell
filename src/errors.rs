@@ -21,6 +21,7 @@ impl Description {
         }
     }
 
+    #[allow(unused)]
     fn tag(&self) -> Tag {
         match self {
             Description::Source(tagged) => tagged.tag,
@@ -44,6 +45,7 @@ pub struct ShellError {
 }
 
 impl ShellError {
+    #[allow(unused)]
     pub(crate) fn tag(&self) -> Option<Tag> {
         self.error.tag()
     }

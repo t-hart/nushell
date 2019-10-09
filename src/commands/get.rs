@@ -1,5 +1,4 @@
 use crate::commands::WholeStreamCommand;
-use crate::data::meta::tag_for_tagged_list;
 use crate::data::Value;
 use crate::errors::ShellError;
 use crate::prelude::*;

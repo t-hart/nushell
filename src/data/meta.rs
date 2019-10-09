@@ -312,6 +312,7 @@ impl Tag {
     }
 }
 
+#[allow(unused)]
 pub fn tag_for_tagged_list(mut iter: impl Iterator<Item = Tag>) -> Tag {
     let first = iter.next();
 

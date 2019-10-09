@@ -36,7 +36,7 @@ impl ColorSyntax for AnyBlockShape {
 
         match block {
             Some((children, tags)) => {
-                let mut iterator = TokensIterator::new(children.item, context.tag, false);
+                let _iterator = TokensIterator::new(children.item, context.tag, false);
 
                 color_delimited_brace(tags, children.item, block_tag, context, shapes);
             }
@@ -59,7 +59,7 @@ impl ExpandExpression for AnyBlockShape {
         let block = block.node.as_block();
 
         match block {
-            Some((block, tags)) => {
+            Some((block, _tags)) => {
                 let mut iterator = TokensIterator::new(&block.item, context.tag, false);
 
                 let exprs = expand_syntax(&ExpressionListShape, &mut iterator, context)?;
@@ -80,9 +80,9 @@ impl ColorSyntax for ShorthandBlock {
     type Info = ();
     fn color_syntax<'a, 'b>(
         &self,
-        token_nodes: &'b mut TokensIterator<'a>,
-        context: &ExpandContext,
-        shapes: &mut Vec<Tagged<FlatShape>>,
+        _token_nodes: &'b mut TokensIterator<'a>,
+        _context: &ExpandContext,
+        _shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Self::Info {
         // ???
 
@@ -173,8 +173,6 @@ impl ExpandExpression for ShorthandPath {
                     head = hir::Expression::dot_member(head, member);
                 }
 
-                println!("{:?}", head);
-
                 Ok(head)
             }
         }
@@ -214,7 +212,7 @@ impl ColorSyntax for ShorthandHeadShape {
 
             // If the head of a shorthand path is a string, it expands to `$it."some string"`
             TokenNode::Token(Tagged {
-                item: RawToken::String(inner),
+                item: RawToken::String(_inner),
                 tag: outer,
             }) => {
                 peeked.commit();

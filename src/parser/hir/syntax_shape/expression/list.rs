@@ -5,7 +5,7 @@ use crate::parser::{
         color_syntax, expand_atom, expand_expr, maybe_spaced, spaced, AnyExpressionShape,
         ColorSyntax, ExpandContext, ExpandSyntax, ExpansionRule,
     },
-    hir::{debug_tokens, TokensIterator},
+    hir::TokensIterator,
     FlatShape,
 };
 use crate::Tagged;

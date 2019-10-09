@@ -44,15 +44,15 @@ impl FlatShape {
                 RawToken::Variable(v) if v.slice(source) == "it" => {
                     shapes.push(FlatShape::ItVariable.tagged(token.tag))
                 }
-                RawToken::Variable(v) => shapes.push(FlatShape::Variable.tagged(token.tag)),
-                RawToken::ExternalCommand(v) => {
+                RawToken::Variable(_) => shapes.push(FlatShape::Variable.tagged(token.tag)),
+                RawToken::ExternalCommand(_) => {
                     shapes.push(FlatShape::ExternalCommand.tagged(token.tag))
                 }
                 RawToken::ExternalWord => shapes.push(FlatShape::ExternalWord.tagged(token.tag)),
                 RawToken::GlobPattern => shapes.push(FlatShape::GlobPattern.tagged(token.tag)),
                 RawToken::Bare => shapes.push(FlatShape::Word.tagged(token.tag)),
             },
-            TokenNode::Call(v) => unimplemented!(),
+            TokenNode::Call(_) => unimplemented!(),
             TokenNode::Nodes(nodes) => {
                 for node in &nodes.item {
                     FlatShape::from(node, source, shapes);
@@ -67,7 +67,7 @@ impl FlatShape {
             }
             TokenNode::Pipeline(pipeline) => {
                 for part in &pipeline.parts {
-                    if let Some(pipe) = part.pipe {
+                    if let Some(_pipe) = part.pipe {
                         shapes.push(FlatShape::Pipe.tagged(part.tag));
                     }
                 }
@@ -88,7 +88,7 @@ impl FlatShape {
                     },
                 tag,
             }) => shapes.push(FlatShape::ShorthandFlag.tagged(tag)),
-            TokenNode::Whitespace(v) => unimplemented!(),
+            TokenNode::Whitespace(_) => unimplemented!(),
             TokenNode::Error(v) => shapes.push(FlatShape::Error.tagged(v.tag)),
         }
     }
