@@ -285,7 +285,9 @@ impl ColorSyntax for VariableShape {
 
         match atom.item {
             AtomicToken::Variable { name: _ } => shapes.push(FlatShape::Variable.tagged(atom.tag)),
-            AtomicToken::ItVariable { name: _ } => shapes.push(FlatShape::ItVariable.tagged(atom.tag)),
+            AtomicToken::ItVariable { name: _ } => {
+                shapes.push(FlatShape::ItVariable.tagged(atom.tag))
+            }
             _other => return,
         }
     }

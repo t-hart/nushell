@@ -54,9 +54,7 @@ impl Plugin for Embed {
                     self.field = Some(s.clone());
                     self.values = Vec::new();
                 }
-                value => {
-                    return Err(ShellError::type_error("string", value.tagged_type_name()))
-                }
+                value => return Err(ShellError::type_error("string", value.tagged_type_name())),
             }
         }
 

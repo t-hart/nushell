@@ -54,10 +54,7 @@ impl ColorSyntax for NumberShape {
                 shapes.push(FlatShape::Error.tagged(tag));
                 return;
             }
-            Tagged {
-                item: Ok(atom),
-                ..
-            } => atom,
+            Tagged { item: Ok(atom), .. } => atom,
         };
 
         atom.color_tokens(shapes);
@@ -110,10 +107,7 @@ impl ColorSyntax for IntShape {
                 shapes.push(FlatShape::Error.tagged(tag));
                 return;
             }
-            Tagged {
-                item: Ok(atom),
-                ..
-            } => atom,
+            Tagged { item: Ok(atom), .. } => atom,
         };
 
         atom.color_tokens(shapes);
