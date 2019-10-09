@@ -1,7 +1,8 @@
 use crate::errors::ShellError;
 use crate::parser::{
     hir::syntax_shape::{
-        color_syntax, expand_atom, spaced, ColorSyntax, ExpandContext, ExpansionRule,
+        color_syntax, expand_atom, AtomicToken, ColorSyntax, ExpandContext, ExpansionRule,
+        MaybeSpaceShape,
     },
     FlatShape, TokenNode, TokensIterator,
 };
@@ -24,40 +25,29 @@ pub fn expand_external_tokens(
     Ok(out)
 }
 
-pub fn color_external_tokens(
-    token_nodes: &mut TokensIterator<'_>,
-    context: &ExpandContext,
-    shapes: &mut Vec<Tagged<FlatShape>>,
-) -> bool {
-    let len = shapes.len();
-
-    loop {
-        let (seen, _) = color_syntax(&spaced(ExternalExpression), token_nodes, context, shapes);
-
-        if !seen {
-            break;
-        }
-    }
-
-    shapes.len() > len
-}
-
 #[derive(Debug, Copy, Clone)]
-struct ExternalExpression;
+pub struct ExternalTokensShape;
 
-impl ColorSyntax for ExternalExpression {
+impl ColorSyntax for ExternalTokensShape {
     type Info = ();
+    type Input = ();
+
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Self::Info {
         loop {
-            let (seen, _) = color_syntax(&ExternalContinuation, token_nodes, context, shapes);
+            // Allow a space
+            color_syntax(&MaybeSpaceShape, token_nodes, context, shapes);
 
-            if !seen {
-                return;
+            // Process an external expression. External expressions are mostly words, with a
+            // few exceptions (like $variables and path expansion rules)
+            match color_syntax(&ExternalExpression, token_nodes, context, shapes).1 {
+                ExternalExpressionResult::Eof => break,
+                ExternalExpressionResult::Processed => continue,
             }
         }
     }
@@ -129,27 +119,41 @@ fn triage_continuation<'a, 'b>(
     Ok(Some(node.tag()))
 }
 
-#[derive(Debug, Copy, Clone)]
-struct ExternalContinuation;
+#[must_use]
+enum ExternalExpressionResult {
+    Eof,
+    Processed,
+}
 
-impl ColorSyntax for ExternalContinuation {
-    type Info = ();
+#[derive(Debug, Copy, Clone)]
+struct ExternalExpression;
+
+impl ColorSyntax for ExternalExpression {
+    type Info = ExternalExpressionResult;
+    type Input = ();
+
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
+    ) -> ExternalExpressionResult {
         let atom = match expand_atom(
             token_nodes,
             "external word",
             context,
             ExpansionRule::permissive(),
         ) {
-            Err(_) => return,
+            Err(_) => unreachable!("TODO: separate infallible expand_atom"),
+            Ok(Tagged {
+                item: AtomicToken::Eof { .. },
+                ..
+            }) => return ExternalExpressionResult::Eof,
             Ok(atom) => atom,
         };
 
         atom.color_tokens(shapes);
+        return ExternalExpressionResult::Processed;
     }
 }

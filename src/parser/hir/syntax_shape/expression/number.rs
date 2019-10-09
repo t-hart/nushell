@@ -1,6 +1,6 @@
 use crate::parser::hir::syntax_shape::{
-    expand_atom, parse_single_node, ColorSyntax, ExpandContext, ExpandExpression, ExpansionRule,
-    FlatShape,
+    expand_atom, parse_single_node, ExpandContext, ExpandExpression, ExpansionRule,
+    FallibleColorSyntax, FlatShape,
 };
 use crate::parser::{
     hir,
@@ -37,14 +37,17 @@ impl ExpandExpression for NumberShape {
     }
 }
 
-impl ColorSyntax for NumberShape {
+impl FallibleColorSyntax for NumberShape {
     type Info = ();
+    type Input = ();
+
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) {
+    ) -> Result<(), ShellError> {
         let atom = token_nodes.spanned(|token_nodes| {
             expand_atom(token_nodes, "number", context, ExpansionRule::permissive())
         });
@@ -52,12 +55,14 @@ impl ColorSyntax for NumberShape {
         let atom = match atom {
             Tagged { item: Err(_), tag } => {
                 shapes.push(FlatShape::Error.tagged(tag));
-                return;
+                return Ok(());
             }
             Tagged { item: Ok(atom), .. } => atom,
         };
 
         atom.color_tokens(shapes);
+
+        Ok(())
     }
 }
 
@@ -90,14 +95,17 @@ impl ExpandExpression for IntShape {
     }
 }
 
-impl ColorSyntax for IntShape {
+impl FallibleColorSyntax for IntShape {
     type Info = ();
+    type Input = ();
+
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) {
+    ) -> Result<(), ShellError> {
         let atom = token_nodes.spanned(|token_nodes| {
             expand_atom(token_nodes, "integer", context, ExpansionRule::permissive())
         });
@@ -105,11 +113,13 @@ impl ColorSyntax for IntShape {
         let atom = match atom {
             Tagged { item: Err(_), tag } => {
                 shapes.push(FlatShape::Error.tagged(tag));
-                return;
+                return Ok(());
             }
             Tagged { item: Ok(atom), .. } => atom,
         };
 
         atom.color_tokens(shapes);
+
+        Ok(())
     }
 }

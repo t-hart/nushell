@@ -1,6 +1,6 @@
 use crate::parser::hir::syntax_shape::{
-    expand_atom, expand_variable, parse_single_node, AtomicToken, ColorSyntax, ExpandContext,
-    ExpandExpression, ExpansionRule, FlatShape, TestSyntax,
+    expand_atom, expand_variable, parse_single_node, AtomicToken, ExpandContext, ExpandExpression,
+    ExpansionRule, FallibleColorSyntax, FlatShape, TestSyntax,
 };
 use crate::parser::hir::tokens_iterator::Peeked;
 use crate::parser::{hir, hir::TokensIterator, RawToken, TokenNode};
@@ -9,18 +9,21 @@ use crate::prelude::*;
 #[derive(Debug, Copy, Clone)]
 pub struct StringShape;
 
-impl ColorSyntax for StringShape {
+impl FallibleColorSyntax for StringShape {
     type Info = ();
+    type Input = FlatShape;
+
     fn color_syntax<'a, 'b>(
         &self,
+        input: &FlatShape,
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) {
+    ) -> Result<(), ShellError> {
         let atom = expand_atom(token_nodes, "string", context, ExpansionRule::permissive());
 
         let atom = match atom {
-            Err(_) => return,
+            Err(_) => return Ok(()),
             Ok(atom) => atom,
         };
 
@@ -28,9 +31,11 @@ impl ColorSyntax for StringShape {
             Tagged {
                 item: AtomicToken::String { .. },
                 tag,
-            } => shapes.push(FlatShape::String.tagged(tag)),
+            } => shapes.push((*input).tagged(tag)),
             other => other.color_tokens(shapes),
         }
+
+        Ok(())
     }
 }
 

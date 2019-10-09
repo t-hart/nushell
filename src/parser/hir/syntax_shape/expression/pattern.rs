@@ -1,6 +1,7 @@
 use crate::parser::hir::syntax_shape::{
     expand_atom, expand_bare, expand_syntax, expression::expand_file_path, parse_single_node,
-    ColorSyntax, ExpandContext, ExpandExpression, ExpandSyntax, ExpansionRule, FlatShape,
+    AtomicToken, ExpandContext, ExpandExpression, ExpandSyntax, ExpansionRule, FallibleColorSyntax,
+    FlatShape,
 };
 use crate::parser::{hir, hir::TokensIterator, Operator, RawToken, TokenNode};
 use crate::prelude::*;
@@ -8,23 +9,29 @@ use crate::prelude::*;
 #[derive(Debug, Copy, Clone)]
 pub struct PatternShape;
 
-impl ColorSyntax for PatternShape {
+impl FallibleColorSyntax for PatternShape {
     type Info = ();
+    type Input = ();
 
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
-        let atom = expand_atom(token_nodes, "pattern", context, ExpansionRule::permissive());
+    ) -> Result<(), ShellError> {
+        token_nodes.checkpoint_with(|token_nodes| {
+            let atom = expand_atom(token_nodes, "pattern", context, ExpansionRule::permissive())?;
 
-        let atom = match atom {
-            Err(_) => return,
-            Ok(val) => val,
-        };
+            match &atom.item {
+                AtomicToken::GlobPattern { .. } | AtomicToken::Word { .. } => {
+                    shapes.push(FlatShape::GlobPattern.tagged(atom.tag));
+                    Ok(())
+                }
 
-        atom.color_tokens(shapes);
+                _ => Err(ShellError::type_error("pattern", atom.tagged_type_name())),
+            }
+        })
     }
 }
 

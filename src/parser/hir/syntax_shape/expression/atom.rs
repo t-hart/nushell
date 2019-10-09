@@ -1,16 +1,23 @@
 use crate::parser::hir::syntax_shape::{
-    expand_syntax, expression::expand_file_path, parse_single_node, BarePathShape, ExpandContext,
-    UnitShape,
+    expand_syntax, expression::expand_file_path, parse_single_node, BarePathShape,
+    BarePatternShape, ExpandContext, UnitShape,
 };
 use crate::parser::{
     hir,
     hir::{Expression, RawNumber, TokensIterator},
-    DelimitedNode, Delimiter, FlatShape, Operator, RawToken, TokenNode, Unit,
+    parse::flag::{Flag, FlagKind},
+    DelimitedNode, Delimiter, FlatShape, RawToken, TokenNode, Unit,
 };
 use crate::prelude::*;
 
 #[derive(Debug)]
 pub enum AtomicToken<'tokens> {
+    Eof {
+        tag: Tag,
+    },
+    Error {
+        error: Tagged<ShellError>,
+    },
     Number {
         number: RawNumber,
     },
@@ -84,6 +91,18 @@ impl<'tokens> TaggedAtomicToken<'tokens> {
         expected: &'static str,
     ) -> Result<hir::Expression, ShellError> {
         Ok(match &self.item {
+            AtomicToken::Eof { .. } => {
+                return Err(ShellError::type_error(
+                    expected,
+                    "eof atomic token".tagged(self.tag),
+                ))
+            }
+            AtomicToken::Error { .. } => {
+                return Err(ShellError::type_error(
+                    expected,
+                    "eof atomic token".tagged(self.tag),
+                ))
+            }
             AtomicToken::Operator { .. } => {
                 return Err(ShellError::type_error(
                     expected,
@@ -131,8 +150,37 @@ impl<'tokens> TaggedAtomicToken<'tokens> {
         })
     }
 
+    pub fn tagged_type_name(&self) -> Tagged<&'static str> {
+        match &self.item {
+            AtomicToken::Eof { .. } => "eof",
+            AtomicToken::Error { .. } => "error",
+            AtomicToken::Operator { .. } => "operator",
+            AtomicToken::ShorthandFlag { .. } => "shorthand flag",
+            AtomicToken::LonghandFlag { .. } => "flag",
+            AtomicToken::Whitespace { .. } => "whitespace",
+            AtomicToken::Dot { .. } => "dot",
+            AtomicToken::Number { .. } => "number",
+            AtomicToken::FilePath { .. } => "file path",
+            AtomicToken::Size { .. } => "size",
+            AtomicToken::String { .. } => "string",
+            AtomicToken::ItVariable { .. } => "$it",
+            AtomicToken::Variable { .. } => "variable",
+            AtomicToken::ExternalCommand { .. } => "external command",
+            AtomicToken::ExternalWord { .. } => "external word",
+            AtomicToken::GlobPattern { .. } => "file pattern",
+            AtomicToken::Word { .. } => "word",
+            AtomicToken::SquareDelimited { .. } => "array literal",
+            AtomicToken::ParenDelimited { .. } => "parenthesized expression",
+            AtomicToken::BraceDelimited { .. } => "block",
+            AtomicToken::Pipeline { .. } => "pipeline",
+        }
+        .tagged(self.tag)
+    }
+
     pub(crate) fn color_tokens(&self, shapes: &mut Vec<Tagged<FlatShape>>) {
         match &self.item {
+            AtomicToken::Eof { .. } => {}
+            AtomicToken::Error { error } => return shapes.push(FlatShape::Error.tagged(error.tag)),
             AtomicToken::Operator { text } => {
                 return shapes.push(FlatShape::Operator.tagged(text));
             }
@@ -202,8 +250,6 @@ pub enum WhitespaceHandling {
     #[allow(unused)]
     AllowWhitespace,
     RejectWhitespace,
-    #[allow(unused)]
-    SkipWhitespace,
 }
 
 #[derive(Debug)]
@@ -211,6 +257,7 @@ pub struct ExpansionRule {
     pub(crate) allow_external_command: bool,
     pub(crate) allow_external_word: bool,
     pub(crate) allow_operator: bool,
+    pub(crate) allow_eof: bool,
     pub(crate) treat_size_as_word: bool,
     pub(crate) commit_errors: bool,
     pub(crate) whitespace: WhitespaceHandling,
@@ -222,20 +269,25 @@ impl ExpansionRule {
             allow_external_command: false,
             allow_external_word: false,
             allow_operator: false,
+            allow_eof: false,
             treat_size_as_word: false,
             commit_errors: false,
             whitespace: WhitespaceHandling::RejectWhitespace,
         }
     }
 
+    /// The intent of permissive mode is to return an atomic token for every possible
+    /// input token. This is important for error-correcting parsing, such as the
+    /// syntax highlighter.
     pub fn permissive() -> ExpansionRule {
         ExpansionRule {
             allow_external_command: true,
             allow_external_word: true,
             allow_operator: true,
+            allow_eof: true,
             treat_size_as_word: false,
             commit_errors: true,
-            whitespace: WhitespaceHandling::RejectWhitespace,
+            whitespace: WhitespaceHandling::AllowWhitespace,
         }
     }
 
@@ -298,12 +350,6 @@ impl ExpansionRule {
         self.whitespace = WhitespaceHandling::RejectWhitespace;
         self
     }
-
-    #[allow(unused)]
-    pub fn skip_whitespace(mut self) -> ExpansionRule {
-        self.whitespace = WhitespaceHandling::SkipWhitespace;
-        self
-    }
 }
 
 /// If the caller of expand_atom throws away the returned atomic token returned, it
@@ -314,10 +360,31 @@ pub fn expand_atom<'me, 'content>(
     context: &ExpandContext,
     rule: ExpansionRule,
 ) -> Result<TaggedAtomicToken<'content>, ShellError> {
+    if token_nodes.at_end() {
+        match rule.allow_eof {
+            true => {
+                return Ok(AtomicToken::Eof {
+                    tag: Tag::unknown(),
+                }
+                .tagged_unknown())
+            }
+            false => return Err(ShellError::unexpected_eof("anything", Tag::unknown())),
+        }
+    }
+
+    // First, we'll need to handle the situation where more than one token corresponds
+    // to a single atomic token
+
+    // If treat_size_as_word, don't try to parse the head of the token stream
+    // as a size.
     match rule.treat_size_as_word {
         true => {}
         false => match expand_syntax(&UnitShape, token_nodes, context) {
+            // If the head of the stream isn't a valid unit, we'll try to parse
+            // it again next as a word
             Err(_) => {}
+
+            // But if it was a valid unit, we're done here
             Ok(Tagged {
                 item: (number, unit),
                 tag,
@@ -325,79 +392,168 @@ pub fn expand_atom<'me, 'content>(
         },
     }
 
+    // Try to parse the head of the stream as a bare path. A bare path includes
+    // words as well as `.`s, connected together without whitespace.
     match expand_syntax(&BarePathShape, token_nodes, context) {
+        // If we didn't find a bare path
         Err(_) => {}
-        Ok(tag) => return Ok(AtomicToken::Word { text: tag }.tagged(tag)),
+        Ok(tag) => {
+            let next = token_nodes.peek_any();
+
+            match next.node {
+                Some(token) if token.is_pattern() => {
+                    // if the very next token is a pattern, we're looking at a glob, not a
+                    // word, and we should try to parse it as a glob next
+                }
+
+                _ => return Ok(AtomicToken::Word { text: tag }.tagged(tag)),
+            }
+        }
     }
 
+    // Try to parse the head of the stream as a pattern. A pattern includes
+    // words, words with `*` as well as `.`s, connected together without whitespace.
+    match expand_syntax(&BarePatternShape, token_nodes, context) {
+        // If we didn't find a bare path
+        Err(_) => {}
+        Ok(tag) => return Ok(AtomicToken::GlobPattern { pattern: tag }.tagged(tag)),
+    }
+
+    // The next token corresponds to at most one atomic token
+
+    // We need to `peek` because `parse_single_node` doesn't cover all of the
+    // cases that `expand_atom` covers. We should probably collapse the two
+    // if possible.
     let peeked = token_nodes.peek_any().not_eof(expected)?;
 
-    loop {
-        match peeked.node {
-            TokenNode::Delimited(Tagged {
-                item:
-                    DelimitedNode {
-                        delimiter: Delimiter::Square,
-                        tags,
-                        children,
-                    },
-                tag,
-            }) => {
+    match peeked.node {
+        TokenNode::Token(_) => {
+            // handle this next
+        }
+
+        TokenNode::Call(_) => unimplemented!("expand_atom TokenNode::Call"),
+        TokenNode::Nodes(_) => unimplemented!("expand_atom TokenNode::Nodes"),
+        TokenNode::Pipeline(_) => unimplemented!("expand_atom TokenNode::Pipeline"),
+
+        TokenNode::Error(error) => {
+            return Ok(AtomicToken::Error {
+                error: error.clone(),
+            }
+            .tagged(error.tag))
+        }
+
+        // { ... }
+        TokenNode::Delimited(Tagged {
+            item:
+                DelimitedNode {
+                    delimiter: Delimiter::Brace,
+                    ..
+                },
+            ..
+        }) => unimplemented!("expand_atom TokenNode::Delimited (brace)"),
+
+        // ( ... )
+        TokenNode::Delimited(Tagged {
+            item:
+                DelimitedNode {
+                    delimiter: Delimiter::Paren,
+                    ..
+                },
+            ..
+        }) => unimplemented!("expand_atom TokenNode::Delimited (paren)"),
+
+        // [ ... ]
+        TokenNode::Delimited(Tagged {
+            item:
+                DelimitedNode {
+                    delimiter: Delimiter::Square,
+                    tags,
+                    children,
+                },
+            tag,
+        }) => {
+            peeked.commit();
+            return Ok(AtomicToken::SquareDelimited {
+                nodes: children,
+                tags: *tags,
+            }
+            .tagged(tag));
+        }
+
+        TokenNode::Flag(Tagged {
+            item:
+                Flag {
+                    kind: FlagKind::Shorthand,
+                    name,
+                },
+            tag,
+        }) => {
+            peeked.commit();
+            return Ok(AtomicToken::ShorthandFlag { name: *name }.tagged(tag));
+        }
+
+        TokenNode::Flag(Tagged {
+            item:
+                Flag {
+                    kind: FlagKind::Longhand,
+                    name,
+                },
+            tag,
+        }) => {
+            peeked.commit();
+            return Ok(AtomicToken::ShorthandFlag { name: *name }.tagged(tag));
+        }
+
+        // If we see whitespace, process the whitespace according to the whitespace
+        // handling rules
+        TokenNode::Whitespace(tag) => match rule.whitespace {
+            // if whitespace is allowed, return a whitespace token
+            WhitespaceHandling::AllowWhitespace => {
                 peeked.commit();
-                return Ok(AtomicToken::SquareDelimited {
-                    nodes: children,
-                    tags: *tags,
-                }
-                .tagged(tag));
+                return Ok(AtomicToken::Whitespace { text: *tag }.tagged(tag));
             }
 
-            TokenNode::Whitespace(tag) => match rule.whitespace {
-                WhitespaceHandling::AllowWhitespace => {
-                    peeked.commit();
-                    return Ok(AtomicToken::Whitespace { text: *tag }.tagged(tag));
-                }
-
-                WhitespaceHandling::SkipWhitespace => {
-                    unimplemented!("WhitespaceHandling::SkipWhitespace")
-                }
-
-                WhitespaceHandling::RejectWhitespace => {
-                    return Err(ShellError::syntax_error(
-                        "Unexpected whitespace".tagged(tag),
-                    ))
-                }
-            },
-
-            _ => break,
-        }
+            // if whitespace is disallowed, return an error
+            WhitespaceHandling::RejectWhitespace => {
+                return Err(ShellError::syntax_error(
+                    "Unexpected whitespace".tagged(tag),
+                ))
+            }
+        },
     }
 
     parse_single_node(token_nodes, expected, |token, token_tag, err| {
         Ok(match token {
-            RawToken::Number(number) => AtomicToken::Number { number }.tagged(token_tag),
-            RawToken::Operator(_) if rule.allow_operator => {
-                AtomicToken::Operator { text: token_tag }.tagged(token_tag)
-            }
-            RawToken::Operator(Operator::Dot) => return Err(err.error()),
-            RawToken::Operator(_) => return Err(err.error()),
-            RawToken::String(body) => AtomicToken::String { body }.tagged(token_tag),
-            RawToken::Variable(name) if name.slice(context.source) == "it" => {
-                AtomicToken::ItVariable { name }.tagged(token_tag)
-            }
-            RawToken::Variable(name) => AtomicToken::Variable { name }.tagged(token_tag),
-            RawToken::ExternalCommand(command) if rule.allow_external_command => {
-                AtomicToken::ExternalCommand { command }.tagged(token_tag)
-            }
-            RawToken::ExternalCommand(_) => {
+            // First, the error cases. Each error case corresponds to a expansion rule
+            // flag that can be used to allow the case
+
+            // rule.allow_operator
+            RawToken::Operator(_) if !rule.allow_operator => return Err(err.error()),
+            // rule.allow_external_command
+            RawToken::ExternalCommand(_) if !rule.allow_external_command => {
                 return Err(ShellError::type_error(
                     expected,
                     token.type_name().tagged(token_tag),
                 ))
             }
-            RawToken::ExternalWord if rule.allow_external_word => {
+            // rule.allow_external_word
+            RawToken::ExternalWord if !rule.allow_external_word => {
+                return Err(ShellError::invalid_external_word(token_tag))
+            }
+
+            RawToken::Number(number) => AtomicToken::Number { number }.tagged(token_tag),
+            RawToken::Operator(_) => AtomicToken::Operator { text: token_tag }.tagged(token_tag),
+            RawToken::String(body) => AtomicToken::String { body }.tagged(token_tag),
+            RawToken::Variable(name) if name.slice(context.source) == "it" => {
+                AtomicToken::ItVariable { name }.tagged(token_tag)
+            }
+            RawToken::Variable(name) => AtomicToken::Variable { name }.tagged(token_tag),
+            RawToken::ExternalCommand(command) => {
+                AtomicToken::ExternalCommand { command }.tagged(token_tag)
+            }
+            RawToken::ExternalWord => {
                 AtomicToken::ExternalWord { text: token_tag }.tagged(token_tag)
             }
-            RawToken::ExternalWord => return Err(ShellError::invalid_external_word(token_tag)),
             RawToken::GlobPattern => {
                 AtomicToken::GlobPattern { pattern: token_tag }.tagged(token_tag)
             }

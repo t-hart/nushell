@@ -9,10 +9,10 @@ pub(crate) mod unit;
 pub(crate) mod variable_path;
 
 use crate::parser::hir::syntax_shape::{
-    color_delimited_square, color_syntax, expand_atom, expand_delimited_square, expand_expr,
-    expand_syntax, AtomicToken, BareShape, ColorSyntax, ColorableDotShape, DotShape, ExpandContext,
+    color_delimited_square, color_syntax, color_syntax_with, expand_atom, expand_delimited_square,
+    expand_expr, expand_syntax, AtomicToken, BareShape, ColorableDotShape, DotShape, ExpandContext,
     ExpandExpression, ExpandSyntax, ExpansionRule, ExpressionContinuation,
-    ExpressionContinuationShape, FlatShape,
+    ExpressionContinuationShape, FallibleColorSyntax, FlatShape,
 };
 use crate::parser::{
     hir,
@@ -37,19 +37,29 @@ impl ExpandExpression for AnyExpressionShape {
     }
 }
 
-impl ColorSyntax for AnyExpressionShape {
+impl FallibleColorSyntax for AnyExpressionShape {
     type Info = ();
+    type Input = ();
 
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) {
+    ) -> Result<(), ShellError> {
         // Look for an expression at the cursor
-        color_syntax(&AnyExpressionStartShape, token_nodes, context, shapes);
+        color_syntax(&AnyExpressionStartShape, token_nodes, context, shapes).1?;
 
-        continue_coloring_expression(token_nodes, context, shapes);
+        match continue_coloring_expression(token_nodes, context, shapes) {
+            Err(_) => {
+                // it's fine for there to be no continuation
+            }
+
+            Ok(()) => {}
+        }
+
+        Ok(())
     }
 }
 
@@ -85,27 +95,22 @@ pub(crate) fn continue_coloring_expression(
     token_nodes: &mut TokensIterator<'_>,
     context: &ExpandContext,
     shapes: &mut Vec<Tagged<FlatShape>>,
-) {
+) -> Result<(), ShellError> {
+    // if there's not even one expression continuation, fail
+    color_syntax(&ExpressionContinuationShape, token_nodes, context, shapes).1?;
+
     loop {
         // Check to see whether there's any continuation after the head expression
-        let (seen, _) = color_syntax(&ExpressionContinuationShape, token_nodes, context, shapes);
+        let result = color_syntax(&ExpressionContinuationShape, token_nodes, context, shapes).1;
 
-        if !seen || is_error(shapes) {
-            return;
+        match result {
+            Err(_) => {
+                // We already saw one continuation, so just return
+                return Ok(());
+            }
+
+            Ok(_) => {}
         }
-    }
-}
-
-fn is_error(shapes: &mut Vec<Tagged<FlatShape>>) -> bool {
-    let last = shapes.iter().last();
-
-    match last {
-        None => false,
-        Some(Tagged {
-            item: FlatShape::Error,
-            ..
-        }) => true,
-        _ => false,
     }
 }
 
@@ -143,14 +148,17 @@ impl ExpandExpression for AnyExpressionStartShape {
     }
 }
 
-impl ColorSyntax for AnyExpressionStartShape {
+impl FallibleColorSyntax for AnyExpressionStartShape {
     type Info = ();
+    type Input = ();
+
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) {
+    ) -> Result<(), ShellError> {
         let atom = token_nodes.spanned(|token_nodes| {
             expand_atom(
                 token_nodes,
@@ -166,7 +174,7 @@ impl ColorSyntax for AnyExpressionStartShape {
                 tag,
             } => {
                 shapes.push(FlatShape::Error.tagged(tag));
-                return;
+                return Ok(());
             }
 
             Tagged {
@@ -193,39 +201,62 @@ impl ColorSyntax for AnyExpressionStartShape {
 
             _ => atom.color_tokens(shapes),
         }
+
+        Ok(())
     }
 }
 
 #[derive(Debug, Copy, Clone)]
 pub struct BareTailShape;
 
-impl ColorSyntax for BareTailShape {
+impl FallibleColorSyntax for BareTailShape {
     type Info = ();
+    type Input = ();
+
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
-        loop {
-            let (seen, _) = color_syntax(&BareShape, token_nodes, context, shapes);
+    ) -> Result<(), ShellError> {
+        let len = shapes.len();
 
-            if seen {
-                continue;
+        loop {
+            let word =
+                color_syntax_with(&BareShape, &FlatShape::Word, token_nodes, context, shapes).1;
+
+            match word {
+                // if a word was found, continue
+                Ok(_) => continue,
+                // if a word wasn't found, try to find a dot
+                Err(_) => {}
             }
 
-            let (seen, _) = color_syntax(
-                &ColorableDotShape { in_bare: true },
+            // try to find a dot
+            let dot = color_syntax_with(
+                &ColorableDotShape,
+                &FlatShape::Word,
                 token_nodes,
                 context,
                 shapes,
-            );
+            )
+            .1;
 
-            if seen {
-                continue;
-            } else {
-                break;
+            match dot {
+                // if a dot was found, try to find another word
+                Ok(_) => continue,
+                // otherwise, we're done
+                Err(_) => break,
             }
+        }
+
+        if shapes.len() > len {
+            Ok(())
+        } else {
+            Err(ShellError::syntax_error(
+                "No tokens matched BareTailShape".tagged_unknown(),
+            ))
         }
     }
 }

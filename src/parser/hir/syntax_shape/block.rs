@@ -2,11 +2,13 @@ use crate::errors::ShellError;
 use crate::parser::{
     hir,
     hir::syntax_shape::{
-        color_delimited_brace, color_syntax, continue_expression, expand_expr, expand_syntax,
-        ColorSyntax, ExpandContext, ExpandExpression, ExpressionListShape, FlatShape,
-        PathTailShape, VariablePathShape,
+        color_fallible_syntax, color_syntax, color_syntax_with, continue_expression, expand_expr,
+        expand_syntax, DelimitedShape, ExpandContext, ExpandExpression,
+        ExpressionContinuationShape, ExpressionListShape, FallibleColorSyntax, FlatShape,
+        MemberShape, PathTailShape, VariablePathShape,
     },
     hir::tokens_iterator::TokensIterator,
+    parse::token_tree::Delimiter,
     RawToken, TokenNode,
 };
 use crate::{Tag, Tagged, TaggedItem};
@@ -14,36 +16,46 @@ use crate::{Tag, Tagged, TaggedItem};
 #[derive(Debug, Copy, Clone)]
 pub struct AnyBlockShape;
 
-impl ColorSyntax for AnyBlockShape {
+impl FallibleColorSyntax for AnyBlockShape {
     type Info = ();
+    type Input = ();
+
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
+    ) -> Result<(), ShellError> {
         let block = token_nodes.peek_non_ws().not_eof("block");
 
         let block = match block {
-            Err(_) => return,
+            Err(_) => return Ok(()),
             Ok(block) => block,
         };
-
-        let block_tag = block.node.tag();
 
         // is it just a block?
         let block = block.node.as_block();
 
         match block {
+            // If so, color it as a block
             Some((children, tags)) => {
-                let _iterator = TokensIterator::new(children.item, context.tag, false);
+                let mut token_nodes = TokensIterator::new(children.item, context.tag, false);
+                color_syntax_with(
+                    &DelimitedShape,
+                    &(Delimiter::Brace, tags.0, tags.1),
+                    &mut token_nodes,
+                    context,
+                    shapes,
+                );
 
-                color_delimited_brace(tags, children.item, block_tag, context, shapes);
+                return Ok(());
             }
             _ => {}
         }
 
-        color_syntax(&ShorthandBlock, token_nodes, context, shapes);
+        // Otherwise, look for a shorthand block. If none found, fail
+        color_syntax(&ShorthandBlock, token_nodes, context, shapes).1
     }
 }
 
@@ -76,21 +88,34 @@ impl ExpandExpression for AnyBlockShape {
 #[derive(Debug, Copy, Clone)]
 pub struct ShorthandBlock;
 
-impl ColorSyntax for ShorthandBlock {
+impl FallibleColorSyntax for ShorthandBlock {
     type Info = ();
+    type Input = ();
+
     fn color_syntax<'a, 'b>(
         &self,
-        _token_nodes: &'b mut TokensIterator<'a>,
-        _context: &ExpandContext,
-        _shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
-        // ???
+        _input: &(),
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Result<(), ShellError> {
+        // Try to find a shorthand head. If none found, fail
+        color_fallible_syntax(&ShorthandPath, token_nodes, context, shapes)?;
 
-        // let path = color_expr(&ShorthandPath, token_nodes, context, shapes);
-        // let start = path.tag;
-        // let expr = continue_expression(path, token_nodes, context)?;
-        // let end = expr.tag;
-        // let block = hir::RawExpression::Block(vec![expr]).tagged(start.until(end));
+        loop {
+            // Check to see whether there's any continuation after the head expression
+            let result =
+                color_fallible_syntax(&ExpressionContinuationShape, token_nodes, context, shapes);
+
+            match result {
+                // if no continuation was found, we're done
+                Err(_) => break,
+                // if a continuation was found, look for another one
+                Ok(_) => continue,
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -114,32 +139,47 @@ impl ExpandExpression for ShorthandBlock {
 #[derive(Debug, Copy, Clone)]
 pub struct ShorthandPath;
 
-impl ColorSyntax for ShorthandPath {
+impl FallibleColorSyntax for ShorthandPath {
     type Info = ();
+    type Input = ();
 
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
-        // if it's a variable path, that's the head part
-        let (seen, _) = color_syntax(&VariablePathShape, token_nodes, context, shapes);
+    ) -> Result<(), ShellError> {
+        token_nodes.checkpoint_with(|token_nodes| {
+            let variable = color_syntax(&VariablePathShape, token_nodes, context, shapes).1;
 
-        if !seen {
-            return;
-        }
+            match variable {
+                Ok(_) => {
+                    // if it's a variable path, that's the head part
+                    return Ok(());
+                }
 
-        // Synthesize the head of the shorthand path (`<member>` -> `$it.<member>`)
-        let (seen, _) = color_syntax(&ShorthandHeadShape, token_nodes, context, shapes);
+                Err(_) => {
+                    // otherwise, we'll try to find a member path
+                }
+            }
 
-        if !seen {
-            return;
-        }
+            // look for a member (`<member>` -> `$it.<member>`)
+            color_syntax(&MemberShape, token_nodes, context, shapes).1?;
 
-        // Now that we've synthesized the head, of the path, proceed to expand the tail of the path
-        // like any other path.
-        color_syntax(&PathTailShape, token_nodes, context, shapes);
+            // Now that we've synthesized the head, of the path, proceed to expand the tail of the path
+            // like any other path.
+            let tail = color_syntax(&PathTailShape, token_nodes, context, shapes).1;
+
+            match tail {
+                Ok(_) => {}
+                Err(_) => {
+                    // It's ok if there's no path tail; a single member is sufficient
+                }
+            }
+
+            Ok(())
+        })
     }
 }
 
@@ -183,21 +223,19 @@ impl ExpandExpression for ShorthandPath {
 #[derive(Debug, Copy, Clone)]
 pub struct ShorthandHeadShape;
 
-impl ColorSyntax for ShorthandHeadShape {
+impl FallibleColorSyntax for ShorthandHeadShape {
     type Info = ();
+    type Input = ();
+
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
-        context: &ExpandContext,
+        _context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
+    ) -> Result<(), ShellError> {
         // A shorthand path must not be at EOF
-        let peeked = token_nodes.peek_non_ws().not_eof("shorthand path");
-
-        let peeked = match peeked {
-            Err(_) => return,
-            Ok(peeked) => peeked,
-        };
+        let peeked = token_nodes.peek_non_ws().not_eof("shorthand path")?;
 
         match peeked.node {
             // If the head of a shorthand path is a bare token, it expands to `$it.bare`
@@ -206,24 +244,24 @@ impl ColorSyntax for ShorthandHeadShape {
                 tag,
             }) => {
                 peeked.commit();
-
                 shapes.push(FlatShape::BareMember.tagged(tag));
+                Ok(())
             }
 
             // If the head of a shorthand path is a string, it expands to `$it."some string"`
             TokenNode::Token(Tagged {
-                item: RawToken::String(_inner),
+                item: RawToken::String(_),
                 tag: outer,
             }) => {
                 peeked.commit();
-
                 shapes.push(FlatShape::StringMember.tagged(outer));
+                Ok(())
             }
 
-            // Any other token is not a valid bare head
-            other => {
-                FlatShape::from(other, context.source, shapes);
-            }
+            other => Err(ShellError::type_error(
+                "shorthand head",
+                other.tagged_type_name(),
+            )),
         }
     }
 }

@@ -7,10 +7,10 @@ use crate::commands::{
     classified::{ClassifiedPipeline, InternalCommand},
     ClassifiedCommand, Command,
 };
-use crate::parser::hir::expand_external_tokens::color_external_tokens;
+use crate::parser::hir::expand_external_tokens::ExternalTokensShape;
 use crate::parser::hir::syntax_shape::block::AnyBlockShape;
 use crate::parser::hir::tokens_iterator::Peeked;
-use crate::parser::parse_command::{color_command_tail, parse_command_tail};
+use crate::parser::parse_command::{parse_command_tail, CommandTailShape};
 use crate::parser::PipelineElement;
 use crate::parser::{
     hir,
@@ -26,12 +26,12 @@ use std::path::{Path, PathBuf};
 
 pub(crate) use self::expression::atom::{expand_atom, AtomicToken, ExpansionRule};
 pub(crate) use self::expression::delimited::{
-    color_delimited_brace, color_delimited_square, expand_delimited_square,
+    color_delimited_square, expand_delimited_square, DelimitedShape,
 };
 pub(crate) use self::expression::file_path::FilePathShape;
-pub(crate) use self::expression::list::ExpressionListShape;
+pub(crate) use self::expression::list::{BackoffColoringMode, ExpressionListShape};
 pub(crate) use self::expression::number::{IntShape, NumberShape};
-pub(crate) use self::expression::pattern::PatternShape;
+pub(crate) use self::expression::pattern::{BarePatternShape, PatternShape};
 pub(crate) use self::expression::string::StringShape;
 pub(crate) use self::expression::unit::UnitShape;
 pub(crate) use self::expression::variable_path::{
@@ -54,46 +54,43 @@ pub enum SyntaxShape {
     Block,
 }
 
-impl ColorSyntax for SyntaxShape {
+impl FallibleColorSyntax for SyntaxShape {
     type Info = ();
+    type Input = ();
+
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
+    ) -> Result<(), ShellError> {
         match self {
-            SyntaxShape::Any => {
-                color_syntax(&AnyExpressionShape, token_nodes, context, shapes);
-            }
+            SyntaxShape::Any => color_syntax(&AnyExpressionShape, token_nodes, context, shapes).1,
             SyntaxShape::List => {
                 color_syntax(&ExpressionListShape, token_nodes, context, shapes);
+                Ok(())
             }
-            SyntaxShape::Int => {
-                color_syntax(&IntShape, token_nodes, context, shapes);
-            }
+            SyntaxShape::Int => color_syntax(&IntShape, token_nodes, context, shapes).1,
             SyntaxShape::String => {
-                color_syntax(&StringShape, token_nodes, context, shapes);
+                color_syntax_with(
+                    &StringShape,
+                    &FlatShape::String,
+                    token_nodes,
+                    context,
+                    shapes,
+                )
+                .1
             }
-            SyntaxShape::Member => {
-                color_syntax(&MemberShape, token_nodes, context, shapes);
-            }
+            SyntaxShape::Member => color_syntax(&MemberShape, token_nodes, context, shapes).1,
             SyntaxShape::ColumnPath => {
-                color_syntax(&ColumnPathShape, token_nodes, context, shapes);
+                color_syntax(&ColumnPathShape, token_nodes, context, shapes).1
             }
-            SyntaxShape::Number => {
-                color_syntax(&NumberShape, token_nodes, context, shapes);
-            }
-            SyntaxShape::Path => {
-                color_syntax(&FilePathShape, token_nodes, context, shapes);
-            }
-            SyntaxShape::Pattern => {
-                color_syntax(&PatternShape, token_nodes, context, shapes);
-            }
-            SyntaxShape::Block => {
-                color_syntax(&AnyBlockShape, token_nodes, context, shapes);
-            }
-        };
+            SyntaxShape::Number => color_syntax(&NumberShape, token_nodes, context, shapes).1,
+            SyntaxShape::Path => color_syntax(&FilePathShape, token_nodes, context, shapes).1,
+            SyntaxShape::Pattern => color_syntax(&PatternShape, token_nodes, context, shapes).1,
+            SyntaxShape::Block => color_syntax(&AnyBlockShape, token_nodes, context, shapes).1,
+        }
     }
 }
 
@@ -187,7 +184,7 @@ pub trait TestSyntax: std::fmt::Debug + Copy {
     ) -> Option<Peeked<'a, 'b>>;
 }
 
-pub trait ExpandExpression: ColorSyntax + std::fmt::Debug + Copy {
+pub trait ExpandExpression: std::fmt::Debug + Copy {
     fn expand_expr<'a, 'b>(
         &self,
         token_nodes: &'b mut TokensIterator<'a>,
@@ -195,15 +192,48 @@ pub trait ExpandExpression: ColorSyntax + std::fmt::Debug + Copy {
     ) -> Result<hir::Expression, ShellError>;
 }
 
-pub trait ColorSyntax: std::fmt::Debug + Copy {
+pub trait FallibleColorSyntax: std::fmt::Debug + Copy {
     type Info;
+    type Input;
 
     fn color_syntax<'a, 'b>(
         &self,
+        input: &Self::Input,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Result<Self::Info, ShellError>;
+}
+
+pub trait ColorSyntax: std::fmt::Debug + Copy {
+    type Info;
+    type Input;
+
+    fn color_syntax<'a, 'b>(
+        &self,
+        input: &Self::Input,
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Self::Info;
+}
+
+impl<T> ColorSyntax for T
+where
+    T: FallibleColorSyntax,
+{
+    type Info = Result<T::Info, ShellError>;
+    type Input = T::Input;
+
+    fn color_syntax<'a, 'b>(
+        &self,
+        input: &Self::Input,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Result<T::Info, ShellError> {
+        FallibleColorSyntax::color_syntax(self, input, token_nodes, context, shapes)
+    }
 }
 
 pub(crate) trait ExpandSyntax: std::fmt::Debug + Copy {
@@ -238,16 +268,16 @@ pub(crate) fn expand_syntax<'a, 'b, T: ExpandSyntax>(
     }
 }
 
-pub fn color_syntax<'a, 'b, T: ColorSyntax<Info = U>, U>(
+pub fn color_syntax<'a, 'b, T: ColorSyntax<Info = U, Input = ()>, U>(
     shape: &T,
     token_nodes: &'b mut TokensIterator<'a>,
     context: &ExpandContext,
     shapes: &mut Vec<Tagged<FlatShape>>,
-) -> (bool, U) {
+) -> ((), U) {
     trace!(target: "nu::color_syntax", "before {} :: {:?}", std::any::type_name::<T>(), debug_tokens(token_nodes, context.source));
 
     let len = shapes.len();
-    let result = shape.color_syntax(token_nodes, context, shapes);
+    let result = shape.color_syntax(&(), token_nodes, context, shapes);
 
     trace!(target: "nu::color_syntax", "ok :: {:?}", debug_tokens(token_nodes, context.source));
 
@@ -263,7 +293,69 @@ pub fn color_syntax<'a, 'b, T: ColorSyntax<Info = U>, U>(
         }
     }
 
-    (len < shapes.len(), result)
+    ((), result)
+}
+
+pub fn color_fallible_syntax<'a, 'b, T: FallibleColorSyntax<Info = U, Input = ()>, U>(
+    shape: &T,
+    token_nodes: &'b mut TokensIterator<'a>,
+    context: &ExpandContext,
+    shapes: &mut Vec<Tagged<FlatShape>>,
+) -> Result<U, ShellError> {
+    trace!(target: "nu::color_syntax", "before {} :: {:?}", std::any::type_name::<T>(), debug_tokens(token_nodes, context.source));
+
+    if token_nodes.at_end() {
+        trace!(target: "nu::color_syntax", "at eof");
+        return Err(ShellError::unexpected_eof("coloring", Tag::unknown()));
+    }
+
+    let len = shapes.len();
+    let result = shape.color_syntax(&(), token_nodes, context, shapes);
+
+    trace!(target: "nu::color_syntax", "ok :: {:?}", debug_tokens(token_nodes, context.source));
+
+    if log_enabled!(target: "nu::color_syntax", log::Level::Trace) {
+        trace!(target: "nu::color_syntax", "after {}", std::any::type_name::<T>());
+
+        if len < shapes.len() {
+            for i in len..(shapes.len()) {
+                trace!(target: "nu::color_syntax", "new shape :: {:?}", shapes[i]);
+            }
+        } else {
+            trace!(target: "nu::color_syntax", "no new shapes");
+        }
+    }
+
+    result
+}
+
+pub fn color_syntax_with<'a, 'b, T: ColorSyntax<Info = U, Input = I>, U, I>(
+    shape: &T,
+    input: &I,
+    token_nodes: &'b mut TokensIterator<'a>,
+    context: &ExpandContext,
+    shapes: &mut Vec<Tagged<FlatShape>>,
+) -> ((), U) {
+    trace!(target: "nu::color_syntax", "before {} :: {:?}", std::any::type_name::<T>(), debug_tokens(token_nodes, context.source));
+
+    let len = shapes.len();
+    let result = shape.color_syntax(input, token_nodes, context, shapes);
+
+    trace!(target: "nu::color_syntax", "ok :: {:?}", debug_tokens(token_nodes, context.source));
+
+    if log_enabled!(target: "nu::color_syntax", log::Level::Trace) {
+        trace!(target: "nu::color_syntax", "after {}", std::any::type_name::<T>());
+
+        if len < shapes.len() {
+            for i in len..(shapes.len()) {
+                trace!(target: "nu::color_syntax", "new shape :: {:?}", shapes[i]);
+            }
+        } else {
+            trace!(target: "nu::color_syntax", "no new shapes");
+        }
+    }
+
+    ((), result)
 }
 
 pub(crate) fn expand_expr<'a, 'b, T: ExpandExpression>(
@@ -400,32 +492,30 @@ impl ExpandSyntax for BarePathShape {
 #[derive(Debug, Copy, Clone)]
 pub struct BareShape;
 
-impl ColorSyntax for BareShape {
+impl FallibleColorSyntax for BareShape {
     type Info = ();
+    type Input = FlatShape;
+
     fn color_syntax<'a, 'b>(
         &self,
+        input: &FlatShape,
         token_nodes: &'b mut TokensIterator<'a>,
-        context: &ExpandContext,
+        _context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
-        let peeked = token_nodes.peek_any().not_eof("word");
-
-        let peeked = match peeked {
-            Err(_) => return,
-            Ok(peeked) => peeked,
-        };
-
-        match peeked.node {
+    ) -> Result<(), ShellError> {
+        token_nodes.peek_any_token(|token| match token {
+            // If it's a bare token, color it
             TokenNode::Token(Tagged {
                 item: RawToken::Bare,
                 tag,
             }) => {
-                peeked.commit();
-                shapes.push(FlatShape::Word.tagged(tag));
+                shapes.push((*input).tagged(tag));
+                Ok(())
             }
 
-            other => FlatShape::from(other, context.source, shapes),
-        }
+            // otherwise, fail
+            other => Err(ShellError::type_error("word", other.tagged_type_name())),
+        })
     }
 }
 
@@ -501,54 +591,36 @@ impl CommandSignature {
 #[derive(Debug, Copy, Clone)]
 pub struct PipelineShape;
 
-impl ColorSyntax for PipelineShape {
+// The failure mode is if the head of the token stream is not a pipeline
+impl FallibleColorSyntax for PipelineShape {
     type Info = ();
+    type Input = ();
 
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
-        let _source = context.source;
+    ) -> Result<(), ShellError> {
+        // Make sure we're looking at a pipeline
+        let Pipeline { parts, .. } = token_nodes.peek_any_token(|node| node.as_pipeline())?;
 
-        let peeked = token_nodes.peek_any().not_eof("pipeline");
-
-        let peeked = match peeked {
-            Err(_) => return,
-            Ok(peeked) => peeked,
-        };
-
-        let pipeline = peeked.node.as_pipeline();
-
-        let pipeline = match pipeline {
-            Err(_) => return,
-            Ok(pipeline) => pipeline,
-        };
-
-        peeked.commit();
-
-        let Pipeline { parts, .. } = pipeline;
-
+        // Enumerate the pipeline parts
         for part in parts {
+            // If the pipeline part has a prefix `|`, emit a pipe to color
             if let Some(pipe) = part.pipe {
                 shapes.push(FlatShape::Pipe.tagged(pipe));
             }
 
+            // Create a new iterator containing the tokens in the pipeline part to color
             let mut token_nodes = TokensIterator::new(&part.tokens.item, part.tag, false);
-            let (seen, _) = color_syntax(
-                &maybe_spaced(CommandShape),
-                &mut token_nodes,
-                context,
-                shapes,
-            );
 
-            if !seen {
-                trace!(target: "nu::color_syntax", "Couln't color command, falling back to default coloring");
-
-                color_syntax(&ExpressionListShape, &mut token_nodes, context, shapes);
-            }
+            color_syntax(&MaybeSpaceShape, &mut token_nodes, context, shapes);
+            color_syntax(&CommandShape, &mut token_nodes, context, shapes);
         }
+
+        Ok(())
     }
 }
 
@@ -579,58 +651,63 @@ impl ExpandSyntax for PipelineShape {
 }
 
 pub enum CommandHeadKind {
-    NoCommand,
-    External(Tag),
-    Internal(Signature, Tag),
+    External,
+    Internal(Signature),
 }
 
 #[derive(Debug, Copy, Clone)]
 pub struct CommandHeadShape;
 
-impl ColorSyntax for CommandHeadShape {
+impl FallibleColorSyntax for CommandHeadShape {
     type Info = CommandHeadKind;
+    type Input = ();
 
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
-        let checkpoint = token_nodes.checkpoint();
+    ) -> Result<CommandHeadKind, ShellError> {
+        // If we don't ultimately find a token, roll back
+        token_nodes.checkpoint_with(|token_nodes| {
+            // First, take a look at the next token
+            let atom = expand_atom(
+                token_nodes,
+                "command head",
+                context,
+                ExpansionRule::permissive(),
+            )?;
 
-        let atom = match expand_atom(
-            checkpoint.iterator,
-            "command head",
-            context,
-            ExpansionRule::permissive(),
-        ) {
-            Err(_) => return CommandHeadKind::NoCommand,
-            Ok(atom) => atom,
-        };
-
-        match atom.item {
-            AtomicToken::ExternalCommand { command } => {
-                shapes.push(FlatShape::ExternalCommand.tagged(command));
-                checkpoint.commit();
-                CommandHeadKind::External(atom.tag)
-            }
-            AtomicToken::Word { text } => {
-                let name = text.slice(context.source);
-
-                if context.registry.has(name) {
-                    shapes.push(FlatShape::InternalCommand.tagged(text));
-                    let command = context.registry.expect_command(name);
-                    checkpoint.commit();
-                    CommandHeadKind::Internal(command.signature(), text)
-                } else {
-                    shapes.push(FlatShape::ExternalCommand.tagged(text));
-                    checkpoint.commit();
-                    CommandHeadKind::External(text)
+            match atom.item {
+                // If the head is an explicit external command (^cmd), color it as an external command
+                AtomicToken::ExternalCommand { command } => {
+                    shapes.push(FlatShape::ExternalCommand.tagged(command));
+                    Ok(CommandHeadKind::External)
                 }
-            }
 
-            _ => CommandHeadKind::NoCommand,
-        }
+                // If the head is a word, it depends on whether it matches a registered internal command
+                AtomicToken::Word { text } => {
+                    let name = text.slice(context.source);
+
+                    if context.registry.has(name) {
+                        // If the registry has the command, color it as an internal command
+                        shapes.push(FlatShape::InternalCommand.tagged(text));
+                        let command = context.registry.expect_command(name);
+                        Ok(CommandHeadKind::Internal(command.signature()))
+                    } else {
+                        // Otherwise, color it as an external command
+                        shapes.push(FlatShape::ExternalCommand.tagged(text));
+                        Ok(CommandHeadKind::External)
+                    }
+                }
+
+                // Otherwise, we're not actually looking at a command
+                _ => Err(ShellError::syntax_error(
+                    "No command at the head".tagged(atom.tag),
+                )),
+            }
+        })
     }
 }
 
@@ -736,18 +813,21 @@ impl ExpandSyntax for ClassifiedCommandShape {
 #[derive(Debug, Copy, Clone)]
 pub struct InternalCommandHeadShape;
 
-impl ColorSyntax for InternalCommandHeadShape {
+impl FallibleColorSyntax for InternalCommandHeadShape {
     type Info = ();
+    type Input = ();
+
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         _context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
+    ) -> Result<(), ShellError> {
         let peeked_head = token_nodes.peek_non_ws().not_eof("command head4");
 
         let peeked_head = match peeked_head {
-            Err(_) => return,
+            Err(_) => return Ok(()),
             Ok(peeked_head) => peeked_head,
         };
 
@@ -766,6 +846,8 @@ impl ColorSyntax for InternalCommandHeadShape {
         };
 
         peeked_head.commit();
+
+        Ok(())
     }
 }
 
@@ -820,9 +902,7 @@ fn parse_single_node<'a, 'b, T>(
     expected: &'static str,
     callback: impl FnOnce(RawToken, Tag, SingleError) -> Result<T, ShellError>,
 ) -> Result<T, ShellError> {
-    let peeked = token_nodes.peek_any().not_eof(expected)?;
-
-    let expr = match peeked.node {
+    token_nodes.peek_any_token(|node| match node {
         TokenNode::Token(token) => callback(
             token.item,
             token.tag(),
@@ -830,14 +910,10 @@ fn parse_single_node<'a, 'b, T>(
                 expected,
                 node: token,
             },
-        )?,
+        ),
 
-        other => return Err(ShellError::type_error(expected, other.tagged_type_name())),
-    };
-
-    peeked.commit();
-
-    Ok(expr)
+        other => Err(ShellError::type_error(expected, other.tagged_type_name())),
+    })
 }
 
 fn parse_single_node_skipping_ws<'a, 'b, T>(
@@ -868,29 +944,33 @@ fn parse_single_node_skipping_ws<'a, 'b, T>(
 #[derive(Debug, Copy, Clone)]
 pub struct WhitespaceShape;
 
-impl ColorSyntax for WhitespaceShape {
+impl FallibleColorSyntax for WhitespaceShape {
     type Info = ();
+    type Input = ();
 
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         _context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
+    ) -> Result<(), ShellError> {
         let peeked = token_nodes.peek_any().not_eof("whitespace");
 
         let peeked = match peeked {
-            Err(_) => return,
+            Err(_) => return Ok(()),
             Ok(peeked) => peeked,
         };
 
         let _tag = match peeked.node {
             TokenNode::Whitespace(tag) => shapes.push(FlatShape::Whitespace.tagged(tag)),
 
-            _other => return,
+            _other => return Ok(()),
         };
 
         peeked.commit();
+
+        Ok(())
     }
 }
 
@@ -922,34 +1002,8 @@ impl ExpandSyntax for WhitespaceShape {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct SpacedExpression<T: ColorSyntax> {
+pub struct SpacedExpression<T: ExpandExpression> {
     inner: T,
-}
-
-impl<T: ColorSyntax> ColorSyntax for SpacedExpression<T> {
-    type Info = ();
-
-    fn color_syntax<'a, 'b>(
-        &self,
-        token_nodes: &'b mut TokensIterator<'a>,
-        context: &ExpandContext,
-        shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
-        let peeked = match token_nodes.peek_any().not_eof("whitespace") {
-            Err(_) => return,
-            Ok(peeked) => peeked,
-        };
-
-        match peeked.node {
-            TokenNode::Whitespace(tag) => {
-                peeked.commit();
-                shapes.push(FlatShape::Whitespace.tagged(tag));
-                color_syntax(&self.inner, token_nodes, context, shapes);
-            }
-
-            _ => {}
-        }
-    }
 }
 
 impl<T: ExpandExpression> ExpandExpression for SpacedExpression<T> {
@@ -975,21 +1029,27 @@ impl<T: ExpandExpression> ExpandExpression for SpacedExpression<T> {
     }
 }
 
-pub fn maybe_spaced<T: ColorSyntax>(inner: T) -> MaybeSpacedExpression<T> {
+pub fn maybe_spaced<T: ExpandExpression>(inner: T) -> MaybeSpacedExpression<T> {
     MaybeSpacedExpression { inner }
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct MaybeSpacedExpression<T: ColorSyntax> {
+pub struct MaybeSpacedExpression<T: ExpandExpression> {
     inner: T,
 }
 
-impl<T: ColorSyntax> ColorSyntax for MaybeSpacedExpression<T> {
+#[derive(Debug, Copy, Clone)]
+pub struct MaybeSpaceShape;
+
+impl ColorSyntax for MaybeSpaceShape {
     type Info = ();
+    type Input = ();
+
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
-        context: &ExpandContext,
+        _context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Self::Info {
         let peeked = token_nodes.peek_any().not_eof("whitespace");
@@ -999,16 +1059,40 @@ impl<T: ColorSyntax> ColorSyntax for MaybeSpacedExpression<T> {
             Ok(peeked) => peeked,
         };
 
+        if let TokenNode::Whitespace(tag) = peeked.node {
+            peeked.commit();
+            shapes.push(FlatShape::Whitespace.tagged(tag));
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct SpaceShape;
+
+impl FallibleColorSyntax for SpaceShape {
+    type Info = ();
+    type Input = ();
+
+    fn color_syntax<'a, 'b>(
+        &self,
+        _input: &(),
+        token_nodes: &'b mut TokensIterator<'a>,
+        _context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Result<(), ShellError> {
+        let peeked = token_nodes.peek_any().not_eof("whitespace")?;
+
         match peeked.node {
             TokenNode::Whitespace(tag) => {
                 peeked.commit();
                 shapes.push(FlatShape::Whitespace.tagged(tag));
+                Ok(())
             }
 
-            _ => {
-                peeked.rollback();
-                color_syntax(&self.inner, token_nodes, context, shapes);
-            }
+            other => Err(ShellError::type_error(
+                "whitespace",
+                other.tagged_type_name(),
+            )),
         }
     }
 }
@@ -1036,7 +1120,7 @@ impl<T: ExpandExpression> ExpandExpression for MaybeSpacedExpression<T> {
     }
 }
 
-pub fn spaced<T: ColorSyntax>(inner: T) -> SpacedExpression<T> {
+pub fn spaced<T: ExpandExpression>(inner: T) -> SpacedExpression<T> {
     SpacedExpression { inner }
 }
 
@@ -1104,65 +1188,30 @@ pub struct CommandShape;
 
 impl ColorSyntax for CommandShape {
     type Info = ();
+    type Input = ();
+
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
-        let (seen, kind) = color_syntax(&CommandHeadShape, token_nodes, context, shapes);
-
-        if !seen {
-            return;
-        }
+    ) {
+        let (_, kind) = color_syntax(&CommandHeadShape, token_nodes, context, shapes);
 
         match kind {
-            CommandHeadKind::NoCommand => {}
-
-            // If the command starts with `^`, treat it as an external command no matter what
-            CommandHeadKind::External(_) => {
-                color_external_tokens(token_nodes, context, shapes);
+            Err(_) => {
+                // We didn't find a command, so we'll have to fall back to parsing this pipeline part
+                // as a blob of undifferentiated expressions
+                color_syntax(&ExpressionListShape, token_nodes, context, shapes);
             }
 
-            CommandHeadKind::Internal(signature, _name) => {
-                color_command_tail(&signature, &context, token_nodes, shapes);
+            Ok(CommandHeadKind::External) => {
+                color_syntax(&ExternalTokensShape, token_nodes, context, shapes);
             }
-        }
+            Ok(CommandHeadKind::Internal(signature)) => {
+                color_syntax_with(&CommandTailShape, &signature, token_nodes, context, shapes);
+            }
+        };
     }
 }
-
-// fn color_command(
-//     command: &Tagged<PipelineElement>,
-//     context: &ExpandContext,
-//     shapes: &mut Vec<Tagged<FlatShape>>,
-// ) -> bool {
-//     let mut token_nodes = TokensIterator::new(&command.tokens.item, command.tag, true);
-
-//     let (seen, kind) = color_syntax(&CommandHeadShape, &mut token_nodes, context, shapes);
-
-//     if !seen {
-//         return false;
-//     }
-
-//     match kind {
-//         CommandHeadKind::NoCommand => false,
-
-//         // This is an unsupported case and might result in bad coloring consequences practically
-//         CommandHeadKind::Expression => false,
-
-//         // If the command starts with `^`, treat it as an external command no matter what
-//         CommandHeadKind::External(name) => {
-//             let name_str = name.slice(context.source);
-
-//             color_external_tokens(&mut token_nodes, context, shapes);
-
-//             true
-//         }
-
-//         CommandHeadKind::Internal(signature, name) => {
-//             color_command_tail(&signature, &context, &mut token_nodes, shapes);
-
-//             true
-//         }
-//     }
-// }

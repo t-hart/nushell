@@ -1,6 +1,6 @@
 use crate::parser::hir::syntax_shape::expression::atom::{expand_atom, AtomicToken, ExpansionRule};
 use crate::parser::hir::syntax_shape::{
-    expression::expand_file_path, ColorSyntax, ExpandContext, ExpandExpression, FlatShape,
+    expression::expand_file_path, ExpandContext, ExpandExpression, FallibleColorSyntax, FlatShape,
 };
 use crate::parser::{hir, hir::TokensIterator};
 use crate::prelude::*;
@@ -8,14 +8,17 @@ use crate::prelude::*;
 #[derive(Debug, Copy, Clone)]
 pub struct FilePathShape;
 
-impl ColorSyntax for FilePathShape {
+impl FallibleColorSyntax for FilePathShape {
     type Info = ();
+    type Input = ();
+
     fn color_syntax<'a, 'b>(
         &self,
+        _input: &(),
         token_nodes: &'b mut TokensIterator<'a>,
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Self::Info {
+    ) -> Result<(), ShellError> {
         let atom = expand_atom(
             token_nodes,
             "file path",
@@ -24,7 +27,7 @@ impl ColorSyntax for FilePathShape {
         );
 
         let atom = match atom {
-            Err(_) => return,
+            Err(_) => return Ok(()),
             Ok(atom) => atom,
         };
 
@@ -33,11 +36,13 @@ impl ColorSyntax for FilePathShape {
             | AtomicToken::String { .. }
             | AtomicToken::Number { .. }
             | AtomicToken::Size { .. } => {
-                return shapes.push(FlatShape::Path.tagged(atom.tag));
+                shapes.push(FlatShape::Path.tagged(atom.tag));
             }
 
-            _ => return atom.color_tokens(shapes),
+            _ => atom.color_tokens(shapes),
         }
+
+        Ok(())
     }
 }
 

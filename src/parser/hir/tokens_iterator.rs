@@ -131,6 +131,10 @@ impl<'content> TokensIterator<'content> {
         }
     }
 
+    pub fn anchor(&self) -> uuid::Uuid {
+        self.tag.anchor
+    }
+
     pub fn all(tokens: &'content [TokenNode], tag: Tag) -> TokensIterator<'content> {
         TokensIterator::new(tokens, tag, false)
     }
@@ -166,8 +170,26 @@ impl<'content> TokensIterator<'content> {
         }
     }
 
-    pub fn anchor(&self) -> uuid::Uuid {
-        self.tag.anchor
+    /// Use a checkpoint when you need to peek more than one token ahead, but can't be sure
+    /// that you'll succeed.
+    pub fn checkpoint_with<'me, T>(
+        &'me mut self,
+        block: impl FnOnce(&mut TokensIterator<'content>) -> Result<T, ShellError>,
+    ) -> Result<T, ShellError> {
+        let index = self.index;
+        let seen = self.seen.clone();
+
+        let checkpoint = Checkpoint {
+            iterator: self,
+            index,
+            seen,
+            committed: false,
+        };
+
+        let value = block(checkpoint.iterator)?;
+
+        checkpoint.commit();
+        return Ok(value);
     }
 
     fn eof_tag(&self) -> Tag {
@@ -261,6 +283,26 @@ impl<'content> TokensIterator<'content> {
     // Peek the next token, including whitespace
     pub fn peek_any<'me>(&'me mut self) -> Peeked<'content, 'me> {
         start_next(self, false)
+    }
+
+    // Peek the next token, including whitespace, but not EOF
+    pub fn peek_any_token<'me, T>(
+        &'me mut self,
+        block: impl FnOnce(&'content TokenNode) -> Result<T, ShellError>,
+    ) -> Result<T, ShellError> {
+        let peeked = start_next(self, false);
+        let peeked = peeked.not_eof("invariant");
+
+        match peeked {
+            Err(err) => return Err(err),
+            Ok(peeked) => match block(peeked.node) {
+                Err(err) => return Err(err),
+                Ok(val) => {
+                    peeked.commit();
+                    return Ok(val);
+                }
+            },
+        }
     }
 
     fn commit(&mut self, from: usize, to: usize) {

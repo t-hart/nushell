@@ -1,5 +1,8 @@
 use crate::errors::{ArgumentError, ShellError};
-use crate::parser::hir::syntax_shape::{color_syntax, expand_expr, flat_shape::FlatShape, spaced};
+use crate::parser::hir::syntax_shape::{
+    color_syntax, expand_expr, flat_shape::FlatShape, spaced, BackoffColoringMode, ColorSyntax,
+    MaybeSpaceShape,
+};
 use crate::parser::registry::{NamedType, PositionalType, Signature};
 use crate::parser::TokensIterator;
 use crate::parser::{
@@ -180,123 +183,183 @@ impl ColoringArgs {
     }
 }
 
-pub fn color_command_tail(
-    config: &Signature,
-    context: &ExpandContext,
-    tail: &mut TokensIterator,
-    shapes: &mut Vec<Tagged<FlatShape>>,
-) {
-    let mut args = ColoringArgs::new(tail.len());
-    trace_remaining("nodes", tail.clone(), context.source());
+#[derive(Debug, Copy, Clone)]
+pub struct CommandTailShape;
 
-    for (name, kind) in &config.named {
-        trace!(target: "nu::parse", "looking for {} : {:?}", name, kind);
+impl ColorSyntax for CommandTailShape {
+    type Info = ();
+    type Input = Signature;
 
-        match kind {
-            NamedType::Switch => match tail.extract(|t| t.as_flag(name, context.source())) {
-                Some((pos, flag)) => args.insert(pos, vec![flag.color()]),
-                None => {}
-            },
-            NamedType::Mandatory(syntax_type) => {
-                match extract_mandatory(config, name, tail, context.source(), Tag::unknown()) {
-                    Err(_) => {}
-                    Ok((pos, flag)) => {
-                        let mut shapes = vec![flag.color()];
-                        tail.move_to(pos);
+    fn color_syntax<'a, 'b>(
+        &self,
+        signature: &Signature,
+        token_nodes: &'b mut TokensIterator<'a>,
+        context: &ExpandContext,
+        shapes: &mut Vec<Tagged<FlatShape>>,
+    ) -> Self::Info {
+        let mut args = ColoringArgs::new(token_nodes.len());
+        trace_remaining("nodes", token_nodes.clone(), context.source());
 
-                        if tail.at_end() {
+        for (name, kind) in &signature.named {
+            trace!(target: "nu::parse", "looking for {} : {:?}", name, kind);
+
+            match kind {
+                NamedType::Switch => {
+                    match token_nodes.extract(|t| t.as_flag(name, context.source())) {
+                        Some((pos, flag)) => args.insert(pos, vec![flag.color()]),
+                        None => {}
+                    }
+                }
+                NamedType::Mandatory(syntax_type) => {
+                    match extract_mandatory(
+                        signature,
+                        name,
+                        token_nodes,
+                        context.source(),
+                        Tag::unknown(),
+                    ) {
+                        Err(_) => {
+                            // The mandatory flag didn't exist at all, so there's nothing to color
+                        }
+                        Ok((pos, flag)) => {
+                            let mut shapes = vec![flag.color()];
+                            token_nodes.move_to(pos);
+
+                            if token_nodes.at_end() {
+                                args.insert(pos, shapes);
+                                token_nodes.restart();
+                                continue;
+                            }
+
+                            color_syntax(&MaybeSpaceShape, token_nodes, context, &mut shapes);
+                            match color_syntax(syntax_type, token_nodes, context, &mut shapes).1 {
+                                Err(_) => {
+                                    // this is ok; it means the part after a mandatory flag isn't
+                                    // a valid expression, but that can happen while typing and
+                                    // we can live with it
+                                }
+
+                                Ok(_) => {}
+                            }
+
                             args.insert(pos, shapes);
-                            tail.restart();
-                            continue;
+                            token_nodes.restart();
+                        }
+                    }
+                }
+                NamedType::Optional(syntax_type) => {
+                    match extract_optional(name, token_nodes, context.source()) {
+                        Err(_) => {
+                            // The optional flag didn't exist at all, so there's nothing to color
+                        }
+                        Ok(Some((pos, flag))) => {
+                            let mut shapes = vec![flag.color()];
+                            token_nodes.move_to(pos);
+
+                            if token_nodes.at_end() {
+                                args.insert(pos, shapes);
+                                token_nodes.restart();
+                                continue;
+                            }
+
+                            color_syntax(&MaybeSpaceShape, token_nodes, context, &mut shapes);
+                            match color_syntax(syntax_type, token_nodes, context, &mut shapes).1 {
+                                Err(_) => {
+                                    // this is ok; it means the part after an optional flag isn't
+                                    // a valid expression, but that can happen while typing and
+                                    // we can live with it
+                                }
+
+                                Ok(_) => {}
+                            }
+
+                            args.insert(pos, shapes);
+                            token_nodes.restart();
                         }
 
-                        color_syntax(&spaced(*syntax_type), tail, context, &mut shapes);
-
-                        args.insert(pos, shapes);
-                        tail.restart();
-                    }
-                }
-            }
-            NamedType::Optional(syntax_type) => {
-                match extract_optional(name, tail, context.source()) {
-                    Err(_) => {}
-                    Ok(Some((pos, flag))) => {
-                        let mut shapes = vec![flag.color()];
-                        tail.move_to(pos);
-
-                        if tail.at_end() {
-                            args.insert(pos, shapes);
-                            tail.restart();
-                            continue;
+                        Ok(None) => {
+                            token_nodes.restart();
                         }
-
-                        color_syntax(&spaced(*syntax_type), tail, context, &mut shapes);
-
-                        args.insert(pos, shapes);
-                        tail.restart();
-                    }
-
-                    Ok(None) => {
-                        tail.restart();
                     }
                 }
-            }
-        };
-    }
+            };
+        }
 
-    trace_remaining("after named", tail.clone(), context.source());
+        trace_remaining("after named", token_nodes.clone(), context.source());
 
-    for arg in &config.positional {
-        trace!("Processing positional {:?}", arg);
+        for arg in &signature.positional {
+            trace!("Processing positional {:?}", arg);
 
-        match arg {
-            PositionalType::Mandatory(..) => {
-                if tail.at_end() {
-                    return;
+            match arg {
+                PositionalType::Mandatory(..) => {
+                    if token_nodes.at_end() {
+                        return;
+                    }
+                }
+
+                PositionalType::Optional(..) => {
+                    if token_nodes.at_end() {
+                        break;
+                    }
                 }
             }
 
-            PositionalType::Optional(..) => {
-                if tail.at_end() {
-                    break;
-                }
-            }
-        }
-
-        let mut shapes = vec![];
-        let pos = tail.pos(false);
-
-        match pos {
-            None => break,
-            Some(pos) => {
-                color_syntax(&spaced(arg.syntax_type()), tail, context, &mut shapes);
-                args.insert(pos, shapes);
-            }
-        }
-    }
-
-    trace_remaining("after positional", tail.clone(), context.source());
-
-    if let Some(syntax_type) = config.rest_positional {
-        loop {
-            if tail.at_end_possible_ws() {
-                break;
-            }
-
-            let pos = tail.pos(false);
+            let mut shapes = vec![];
+            let pos = token_nodes.pos(false);
 
             match pos {
                 None => break,
                 Some(pos) => {
-                    let mut shapes = vec![];
-                    color_syntax(&spaced(syntax_type), tail, context, &mut shapes);
-                    args.insert(pos, shapes);
+                    color_syntax(&MaybeSpaceShape, token_nodes, context, &mut shapes);
+                    match color_syntax(&arg.syntax_type(), token_nodes, context, &mut shapes).1 {
+                        Err(_) => {
+                            // There are more tokens and we were expecting a positional argument here,
+                            // but it didn't match. Hopefully it will be matched by a future token
+                        }
+                        Ok(_) => {
+                            args.insert(pos, shapes);
+                        }
+                    }
                 }
             }
         }
-    }
 
-    args.spread_shapes(shapes);
+        trace_remaining("after positional", token_nodes.clone(), context.source());
+
+        if let Some(syntax_type) = signature.rest_positional {
+            loop {
+                if token_nodes.at_end_possible_ws() {
+                    break;
+                }
+
+                let pos = token_nodes.pos(false);
+
+                match pos {
+                    None => break,
+                    Some(pos) => {
+                        let mut shapes = vec![];
+                        color_syntax(&MaybeSpaceShape, token_nodes, context, &mut shapes);
+                        match color_syntax(&syntax_type, token_nodes, context, &mut shapes).1 {
+                            Err(_) => {
+                                // There are more tokens and we were expecting a positional argument here,
+                                // but it didn't match. We're going to have to fall back to consuming the
+                                // token with backoff coloring mode
+                                break;
+                            }
+
+                            Ok(_) => {}
+                        }
+                        args.insert(pos, shapes);
+                    }
+                }
+            }
+        }
+
+        args.spread_shapes(shapes);
+
+        // Consume any remaining tokens with backoff coloring mode
+        color_syntax(&BackoffColoringMode, token_nodes, context, shapes);
+    }
 }
 
 fn extract_switch(name: &str, tokens: &mut hir::TokensIterator<'_>, source: &Text) -> Option<Flag> {

@@ -90,7 +90,16 @@ impl Highlighter for Helper {
                     .context
                     .expand_context(&text, Tag::from((0, line.len() - 1, uuid::Uuid::nil())));
                 let mut shapes = vec![];
-                color_syntax(&PipelineShape, &mut tokens, &expand_context, &mut shapes);
+
+                // We just constructed a token list that only contains a pipeline, so it can't fail
+                color_syntax(&PipelineShape, &mut tokens, &expand_context, &mut shapes)
+                    .1
+                    .unwrap();
+
+                println!(
+                    "\n{:?}",
+                    shapes.iter().map(|shape| shape.item).collect::<Vec<_>>()
+                );
 
                 loop {
                     match iter.next() {

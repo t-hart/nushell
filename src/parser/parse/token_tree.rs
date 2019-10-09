@@ -152,6 +152,16 @@ impl TokenNode {
         }
     }
 
+    pub fn is_pattern(&self) -> bool {
+        match self {
+            TokenNode::Token(Tagged {
+                item: RawToken::GlobPattern,
+                ..
+            }) => true,
+            _ => false,
+        }
+    }
+
     pub fn is_dot(&self) -> bool {
         match self {
             TokenNode::Token(Tagged {
