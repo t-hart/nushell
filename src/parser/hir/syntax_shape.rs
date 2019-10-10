@@ -15,7 +15,7 @@ use crate::parser::PipelineElement;
 use crate::parser::{
     hir,
     hir::{debug_tokens, TokensIterator},
-    FlatShape, Operator, Pipeline, RawToken, TokenNode,
+    Operator, Pipeline, RawToken, TokenNode,
 };
 use crate::prelude::*;
 use derive_new::new;
@@ -39,6 +39,7 @@ pub(crate) use self::expression::variable_path::{
     ExpressionContinuationShape, MemberShape, PathTailShape, VariablePathShape,
 };
 pub(crate) use self::expression::{continue_expression, AnyExpressionShape};
+pub(crate) use self::flat_shape::FlatShape;
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum SyntaxShape {
@@ -66,30 +67,39 @@ impl FallibleColorSyntax for SyntaxShape {
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Result<(), ShellError> {
         match self {
-            SyntaxShape::Any => color_syntax(&AnyExpressionShape, token_nodes, context, shapes).1,
+            SyntaxShape::Any => {
+                color_fallible_syntax(&AnyExpressionShape, token_nodes, context, shapes)
+            }
             SyntaxShape::List => {
                 color_syntax(&ExpressionListShape, token_nodes, context, shapes);
                 Ok(())
             }
-            SyntaxShape::Int => color_syntax(&IntShape, token_nodes, context, shapes).1,
-            SyntaxShape::String => {
-                color_syntax_with(
-                    &StringShape,
-                    &FlatShape::String,
-                    token_nodes,
-                    context,
-                    shapes,
-                )
-                .1
+            SyntaxShape::Int => color_fallible_syntax(&IntShape, token_nodes, context, shapes),
+            SyntaxShape::String => color_fallible_syntax_with(
+                &StringShape,
+                &FlatShape::String,
+                token_nodes,
+                context,
+                shapes,
+            ),
+            SyntaxShape::Member => {
+                color_fallible_syntax(&MemberShape, token_nodes, context, shapes)
             }
-            SyntaxShape::Member => color_syntax(&MemberShape, token_nodes, context, shapes).1,
             SyntaxShape::ColumnPath => {
-                color_syntax(&ColumnPathShape, token_nodes, context, shapes).1
+                color_fallible_syntax(&ColumnPathShape, token_nodes, context, shapes)
             }
-            SyntaxShape::Number => color_syntax(&NumberShape, token_nodes, context, shapes).1,
-            SyntaxShape::Path => color_syntax(&FilePathShape, token_nodes, context, shapes).1,
-            SyntaxShape::Pattern => color_syntax(&PatternShape, token_nodes, context, shapes).1,
-            SyntaxShape::Block => color_syntax(&AnyBlockShape, token_nodes, context, shapes).1,
+            SyntaxShape::Number => {
+                color_fallible_syntax(&NumberShape, token_nodes, context, shapes)
+            }
+            SyntaxShape::Path => {
+                color_fallible_syntax(&FilePathShape, token_nodes, context, shapes)
+            }
+            SyntaxShape::Pattern => {
+                color_fallible_syntax(&PatternShape, token_nodes, context, shapes)
+            }
+            SyntaxShape::Block => {
+                color_fallible_syntax(&AnyBlockShape, token_nodes, context, shapes)
+            }
         }
     }
 }
@@ -218,23 +228,23 @@ pub trait ColorSyntax: std::fmt::Debug + Copy {
     ) -> Self::Info;
 }
 
-impl<T> ColorSyntax for T
-where
-    T: FallibleColorSyntax,
-{
-    type Info = Result<T::Info, ShellError>;
-    type Input = T::Input;
+// impl<T> ColorSyntax for T
+// where
+//     T: FallibleColorSyntax,
+// {
+//     type Info = Result<T::Info, ShellError>;
+//     type Input = T::Input;
 
-    fn color_syntax<'a, 'b>(
-        &self,
-        input: &Self::Input,
-        token_nodes: &'b mut TokensIterator<'a>,
-        context: &ExpandContext,
-        shapes: &mut Vec<Tagged<FlatShape>>,
-    ) -> Result<T::Info, ShellError> {
-        FallibleColorSyntax::color_syntax(self, input, token_nodes, context, shapes)
-    }
-}
+//     fn color_syntax<'a, 'b>(
+//         &self,
+//         input: &Self::Input,
+//         token_nodes: &'b mut TokensIterator<'a>,
+//         context: &ExpandContext,
+//         shapes: &mut Vec<Tagged<FlatShape>>,
+//     ) -> Result<T::Info, ShellError> {
+//         FallibleColorSyntax::color_syntax(self, input, token_nodes, context, shapes)
+//     }
+// }
 
 pub(crate) trait ExpandSyntax: std::fmt::Debug + Copy {
     type Output: std::fmt::Debug;
@@ -356,6 +366,40 @@ pub fn color_syntax_with<'a, 'b, T: ColorSyntax<Info = U, Input = I>, U, I>(
     }
 
     ((), result)
+}
+
+pub fn color_fallible_syntax_with<'a, 'b, T: FallibleColorSyntax<Info = U, Input = I>, U, I>(
+    shape: &T,
+    input: &I,
+    token_nodes: &'b mut TokensIterator<'a>,
+    context: &ExpandContext,
+    shapes: &mut Vec<Tagged<FlatShape>>,
+) -> Result<U, ShellError> {
+    trace!(target: "nu::color_syntax", "before {} :: {:?}", std::any::type_name::<T>(), debug_tokens(token_nodes, context.source));
+
+    if token_nodes.at_end() {
+        trace!(target: "nu::color_syntax", "at eof");
+        return Err(ShellError::unexpected_eof("coloring", Tag::unknown()));
+    }
+
+    let len = shapes.len();
+    let result = shape.color_syntax(input, token_nodes, context, shapes);
+
+    trace!(target: "nu::color_syntax", "ok :: {:?}", debug_tokens(token_nodes, context.source));
+
+    if log_enabled!(target: "nu::color_syntax", log::Level::Trace) {
+        trace!(target: "nu::color_syntax", "after {}", std::any::type_name::<T>());
+
+        if len < shapes.len() {
+            for i in len..(shapes.len()) {
+                trace!(target: "nu::color_syntax", "new shape :: {:?}", shapes[i]);
+            }
+        } else {
+            trace!(target: "nu::color_syntax", "no new shapes");
+        }
+    }
+
+    result
 }
 
 pub(crate) fn expand_expr<'a, 'b, T: ExpandExpression>(
@@ -670,7 +714,7 @@ impl FallibleColorSyntax for CommandHeadShape {
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Result<CommandHeadKind, ShellError> {
         // If we don't ultimately find a token, roll back
-        token_nodes.checkpoint_with(|token_nodes| {
+        token_nodes.atomic(|token_nodes| {
             // First, take a look at the next token
             let atom = expand_atom(
                 token_nodes,
@@ -1197,7 +1241,7 @@ impl ColorSyntax for CommandShape {
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) {
-        let (_, kind) = color_syntax(&CommandHeadShape, token_nodes, context, shapes);
+        let kind = color_fallible_syntax(&CommandHeadShape, token_nodes, context, shapes);
 
         match kind {
             Err(_) => {

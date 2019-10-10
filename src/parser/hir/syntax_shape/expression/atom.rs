@@ -180,30 +180,30 @@ impl<'tokens> TaggedAtomicToken<'tokens> {
     pub(crate) fn color_tokens(&self, shapes: &mut Vec<Tagged<FlatShape>>) {
         match &self.item {
             AtomicToken::Eof { .. } => {}
-            AtomicToken::Error { error } => return shapes.push(FlatShape::Error.tagged(error.tag)),
-            AtomicToken::Operator { text } => {
-                return shapes.push(FlatShape::Operator.tagged(text));
+            AtomicToken::Error { .. } => return shapes.push(FlatShape::Error.tagged(self.tag)),
+            AtomicToken::Operator { .. } => {
+                return shapes.push(FlatShape::Operator.tagged(self.tag));
             }
-            AtomicToken::ShorthandFlag { name } => {
-                return shapes.push(FlatShape::ShorthandFlag.tagged(name));
+            AtomicToken::ShorthandFlag { .. } => {
+                return shapes.push(FlatShape::ShorthandFlag.tagged(self.tag));
             }
-            AtomicToken::LonghandFlag { name } => {
-                return shapes.push(FlatShape::Flag.tagged(name));
+            AtomicToken::LonghandFlag { .. } => {
+                return shapes.push(FlatShape::Flag.tagged(self.tag));
             }
-            AtomicToken::Whitespace { text } => {
-                return shapes.push(FlatShape::Whitespace.tagged(text));
+            AtomicToken::Whitespace { .. } => {
+                return shapes.push(FlatShape::Whitespace.tagged(self.tag));
             }
-            AtomicToken::FilePath { path } => return shapes.push(FlatShape::Path.tagged(path)),
-            AtomicToken::Dot { text } => return shapes.push(FlatShape::Dot.tagged(text)),
+            AtomicToken::FilePath { .. } => return shapes.push(FlatShape::Path.tagged(self.tag)),
+            AtomicToken::Dot { .. } => return shapes.push(FlatShape::Dot.tagged(self.tag)),
             AtomicToken::Number {
-                number: RawNumber::Decimal(tag),
+                number: RawNumber::Decimal(_),
             } => {
-                return shapes.push(FlatShape::Decimal.tagged(tag));
+                return shapes.push(FlatShape::Decimal.tagged(self.tag));
             }
             AtomicToken::Number {
-                number: RawNumber::Int(tag),
+                number: RawNumber::Int(_),
             } => {
-                return shapes.push(FlatShape::Int.tagged(tag));
+                return shapes.push(FlatShape::Int.tagged(self.tag));
             }
             AtomicToken::Size { number, unit } => {
                 return shapes.push(
@@ -214,33 +214,24 @@ impl<'tokens> TaggedAtomicToken<'tokens> {
                     .tagged(self.tag),
                 );
             }
-            AtomicToken::String { body } => return shapes.push(FlatShape::String.tagged(body)),
-            AtomicToken::ItVariable { name } => {
-                return shapes.push(FlatShape::ItVariable.tagged(name))
+            AtomicToken::String { .. } => return shapes.push(FlatShape::String.tagged(self.tag)),
+            AtomicToken::ItVariable { .. } => {
+                return shapes.push(FlatShape::ItVariable.tagged(self.tag))
             }
-            AtomicToken::Variable { name } => return shapes.push(FlatShape::Variable.tagged(name)),
-            AtomicToken::ExternalCommand { command } => {
-                return shapes.push(FlatShape::ExternalCommand.tagged(command));
+            AtomicToken::Variable { .. } => {
+                return shapes.push(FlatShape::Variable.tagged(self.tag))
             }
-            AtomicToken::ExternalWord { text } => {
-                return shapes.push(FlatShape::ExternalWord.tagged(text))
+            AtomicToken::ExternalCommand { .. } => {
+                return shapes.push(FlatShape::ExternalCommand.tagged(self.tag));
             }
-            AtomicToken::GlobPattern { pattern } => {
-                return shapes.push(FlatShape::GlobPattern.tagged(pattern))
+            AtomicToken::ExternalWord { .. } => {
+                return shapes.push(FlatShape::ExternalWord.tagged(self.tag))
             }
-            AtomicToken::Word { text } => return shapes.push(FlatShape::Word.tagged(text)),
-            AtomicToken::SquareDelimited { .. } => {
-                unreachable!("BUG: handle nested tokens before calling color_tokens")
+            AtomicToken::GlobPattern { .. } => {
+                return shapes.push(FlatShape::GlobPattern.tagged(self.tag))
             }
-            AtomicToken::ParenDelimited { .. } => {
-                unreachable!("BUG: handle nested tokens before calling color_tokens")
-            }
-            AtomicToken::BraceDelimited { .. } => {
-                unreachable!("BUG: handle nested tokens before calling color_tokens")
-            }
-            AtomicToken::Pipeline { .. } => {
-                unreachable!("BUG: handle nested tokens before calling color_tokens")
-            }
+            AtomicToken::Word { .. } => return shapes.push(FlatShape::Word.tagged(self.tag)),
+            _ => return shapes.push(FlatShape::Error.tagged(self.tag)),
         }
     }
 }
@@ -431,36 +422,13 @@ pub fn expand_atom<'me, 'content>(
             // handle this next
         }
 
-        TokenNode::Call(_) => unimplemented!("expand_atom TokenNode::Call"),
-        TokenNode::Nodes(_) => unimplemented!("expand_atom TokenNode::Nodes"),
-        TokenNode::Pipeline(_) => unimplemented!("expand_atom TokenNode::Pipeline"),
-
         TokenNode::Error(error) => {
+            peeked.commit();
             return Ok(AtomicToken::Error {
                 error: error.clone(),
             }
-            .tagged(error.tag))
+            .tagged(error.tag));
         }
-
-        // { ... }
-        TokenNode::Delimited(Tagged {
-            item:
-                DelimitedNode {
-                    delimiter: Delimiter::Brace,
-                    ..
-                },
-            ..
-        }) => unimplemented!("expand_atom TokenNode::Delimited (brace)"),
-
-        // ( ... )
-        TokenNode::Delimited(Tagged {
-            item:
-                DelimitedNode {
-                    delimiter: Delimiter::Paren,
-                    ..
-                },
-            ..
-        }) => unimplemented!("expand_atom TokenNode::Delimited (paren)"),
 
         // [ ... ]
         TokenNode::Delimited(Tagged {
@@ -520,6 +488,16 @@ pub fn expand_atom<'me, 'content>(
                 ))
             }
         },
+
+        other => {
+            let tag = peeked.node.tag();
+
+            peeked.commit();
+            return Ok(AtomicToken::Error {
+                error: ShellError::type_error("token", other.tagged_type_name()).tagged(tag),
+            }
+            .tagged(tag));
+        }
     }
 
     parse_single_node(token_nodes, expected, |token, token_tag, err| {

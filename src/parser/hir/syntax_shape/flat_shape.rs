@@ -67,7 +67,7 @@ impl FlatShape {
             }
             TokenNode::Pipeline(pipeline) => {
                 for part in &pipeline.parts {
-                    if let Some(_pipe) = part.pipe {
+                    if let Some(_) = part.pipe {
                         shapes.push(FlatShape::Pipe.tagged(part.tag));
                     }
                 }
@@ -88,7 +88,7 @@ impl FlatShape {
                     },
                 tag,
             }) => shapes.push(FlatShape::ShorthandFlag.tagged(tag)),
-            TokenNode::Whitespace(_) => unimplemented!(),
+            TokenNode::Whitespace(v) => unimplemented!(),
             TokenNode::Error(v) => shapes.push(FlatShape::Error.tagged(v.tag)),
         }
     }

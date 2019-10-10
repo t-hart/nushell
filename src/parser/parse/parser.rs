@@ -189,7 +189,7 @@ pub fn raw_number(input: NomSpan) -> IResult<NomSpan, Tagged<RawNumber>> {
     match input.fragment.chars().next() {
         None => return Ok((input, RawNumber::int((start, input.offset, input.extra)))),
         Some('.') => (),
-        Some(other) if other.is_whitespace() => {
+        other if is_boundary(other) => {
             return Ok((input, RawNumber::int((start, input.offset, input.extra))))
         }
         _ => {
@@ -215,16 +215,14 @@ pub fn raw_number(input: NomSpan) -> IResult<NomSpan, Tagged<RawNumber>> {
 
     let next = input.fragment.chars().next();
 
-    if let Some(next) = next {
-        if !next.is_whitespace() {
-            return Err(nom::Err::Error(nom::error::make_error(
-                input,
-                nom::error::ErrorKind::Tag,
-            )));
-        }
+    if is_boundary(next) {
+        Ok((input, RawNumber::decimal((start, end, input.extra))))
+    } else {
+        Err(nom::Err::Error(nom::error::make_error(
+            input,
+            nom::error::ErrorKind::Tag,
+        )))
     }
-
-    Ok((input, RawNumber::decimal((start, end, input.extra))))
 }
 
 #[tracable_parser]

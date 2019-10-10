@@ -1,7 +1,7 @@
 use crate::errors::{ArgumentError, ShellError};
 use crate::parser::hir::syntax_shape::{
-    color_syntax, expand_expr, flat_shape::FlatShape, spaced, BackoffColoringMode, ColorSyntax,
-    MaybeSpaceShape,
+    color_fallible_syntax, color_syntax, expand_expr, flat_shape::FlatShape, spaced,
+    BackoffColoringMode, ColorSyntax, MaybeSpaceShape,
 };
 use crate::parser::registry::{NamedType, PositionalType, Signature};
 use crate::parser::TokensIterator;
@@ -201,7 +201,7 @@ impl ColorSyntax for CommandTailShape {
         trace_remaining("nodes", token_nodes.clone(), context.source());
 
         for (name, kind) in &signature.named {
-            trace!(target: "nu::parse", "looking for {} : {:?}", name, kind);
+            trace!(target: "nu::color_syntax", "looking for {} : {:?}", name, kind);
 
             match kind {
                 NamedType::Switch => {
@@ -231,16 +231,19 @@ impl ColorSyntax for CommandTailShape {
                                 continue;
                             }
 
-                            color_syntax(&MaybeSpaceShape, token_nodes, context, &mut shapes);
-                            match color_syntax(syntax_type, token_nodes, context, &mut shapes).1 {
-                                Err(_) => {
-                                    // this is ok; it means the part after a mandatory flag isn't
-                                    // a valid expression, but that can happen while typing and
-                                    // we can live with it
-                                }
+                            // We can live with unmatched syntax after a mandatory flag
+                            token_nodes.atomic(|token_nodes| {
+                                color_syntax(&MaybeSpaceShape, token_nodes, context, &mut shapes);
 
-                                Ok(_) => {}
-                            }
+                                // If the part after a mandatory flag isn't present, that's ok, but we
+                                // should roll back any whitespace we chomped
+                                color_fallible_syntax(
+                                    syntax_type,
+                                    token_nodes,
+                                    context,
+                                    &mut shapes,
+                                )
+                            });
 
                             args.insert(pos, shapes);
                             token_nodes.restart();
@@ -262,16 +265,19 @@ impl ColorSyntax for CommandTailShape {
                                 continue;
                             }
 
-                            color_syntax(&MaybeSpaceShape, token_nodes, context, &mut shapes);
-                            match color_syntax(syntax_type, token_nodes, context, &mut shapes).1 {
-                                Err(_) => {
-                                    // this is ok; it means the part after an optional flag isn't
-                                    // a valid expression, but that can happen while typing and
-                                    // we can live with it
-                                }
+                            // We can live with unmatched syntax after an optional flag
+                            let _ = token_nodes.atomic(|token_nodes| {
+                                color_syntax(&MaybeSpaceShape, token_nodes, context, &mut shapes);
 
-                                Ok(_) => {}
-                            }
+                                // If the part after a mandatory flag isn't present, that's ok, but we
+                                // should roll back any whitespace we chomped
+                                color_fallible_syntax(
+                                    syntax_type,
+                                    token_nodes,
+                                    context,
+                                    &mut shapes,
+                                )
+                            });
 
                             args.insert(pos, shapes);
                             token_nodes.restart();
@@ -293,7 +299,7 @@ impl ColorSyntax for CommandTailShape {
             match arg {
                 PositionalType::Mandatory(..) => {
                     if token_nodes.at_end() {
-                        return;
+                        break;
                     }
                 }
 
@@ -310,16 +316,23 @@ impl ColorSyntax for CommandTailShape {
             match pos {
                 None => break,
                 Some(pos) => {
-                    color_syntax(&MaybeSpaceShape, token_nodes, context, &mut shapes);
-                    match color_syntax(&arg.syntax_type(), token_nodes, context, &mut shapes).1 {
-                        Err(_) => {
-                            // There are more tokens and we were expecting a positional argument here,
-                            // but it didn't match. Hopefully it will be matched by a future token
-                        }
-                        Ok(_) => {
-                            args.insert(pos, shapes);
-                        }
-                    }
+                    // We can live with an unmatched positional argument. Hopefully it will be
+                    // matched by a future token
+                    let _ = token_nodes.atomic(|token_nodes| {
+                        color_syntax(&MaybeSpaceShape, token_nodes, context, &mut shapes);
+
+                        // If no match, we should roll back any whitespace we chomped
+                        color_fallible_syntax(
+                            &arg.syntax_type(),
+                            token_nodes,
+                            context,
+                            &mut shapes,
+                        )?;
+
+                        args.insert(pos, shapes);
+
+                        Ok(())
+                    });
                 }
             }
         }
@@ -338,18 +351,23 @@ impl ColorSyntax for CommandTailShape {
                     None => break,
                     Some(pos) => {
                         let mut shapes = vec![];
-                        color_syntax(&MaybeSpaceShape, token_nodes, context, &mut shapes);
-                        match color_syntax(&syntax_type, token_nodes, context, &mut shapes).1 {
-                            Err(_) => {
-                                // There are more tokens and we were expecting a positional argument here,
-                                // but it didn't match. We're going to have to fall back to consuming the
-                                // token with backoff coloring mode
-                                break;
-                            }
 
-                            Ok(_) => {}
+                        // If any arguments don't match, we'll fall back to backoff coloring mode
+                        let result = token_nodes.atomic(|token_nodes| {
+                            color_syntax(&MaybeSpaceShape, token_nodes, context, &mut shapes);
+
+                            // If no match, we should roll back any whitespace we chomped
+                            color_fallible_syntax(&syntax_type, token_nodes, context, &mut shapes)?;
+
+                            args.insert(pos, shapes);
+
+                            Ok(())
+                        });
+
+                        match result {
+                            Err(_) => break,
+                            Ok(_) => continue,
                         }
-                        args.insert(pos, shapes);
                     }
                 }
             }
@@ -359,6 +377,8 @@ impl ColorSyntax for CommandTailShape {
 
         // Consume any remaining tokens with backoff coloring mode
         color_syntax(&BackoffColoringMode, token_nodes, context, shapes);
+
+        shapes.sort_by(|a, b| a.tag.span.start().cmp(&b.tag.span.start()));
     }
 }
 

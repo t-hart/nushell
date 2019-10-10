@@ -172,7 +172,7 @@ impl<'content> TokensIterator<'content> {
 
     /// Use a checkpoint when you need to peek more than one token ahead, but can't be sure
     /// that you'll succeed.
-    pub fn checkpoint_with<'me, T>(
+    pub fn atomic<'me, T>(
         &'me mut self,
         block: impl FnOnce(&mut TokensIterator<'content>) -> Result<T, ShellError>,
     ) -> Result<T, ShellError> {

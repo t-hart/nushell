@@ -9,9 +9,9 @@ pub(crate) mod unit;
 pub(crate) mod variable_path;
 
 use crate::parser::hir::syntax_shape::{
-    color_delimited_square, color_syntax, color_syntax_with, expand_atom, expand_delimited_square,
-    expand_expr, expand_syntax, AtomicToken, BareShape, ColorableDotShape, DotShape, ExpandContext,
-    ExpandExpression, ExpandSyntax, ExpansionRule, ExpressionContinuation,
+    color_delimited_square, color_fallible_syntax, color_fallible_syntax_with, expand_atom,
+    expand_delimited_square, expand_expr, expand_syntax, AtomicToken, BareShape, ColorableDotShape,
+    DotShape, ExpandContext, ExpandExpression, ExpandSyntax, ExpansionRule, ExpressionContinuation,
     ExpressionContinuationShape, FallibleColorSyntax, FlatShape,
 };
 use crate::parser::{
@@ -49,7 +49,7 @@ impl FallibleColorSyntax for AnyExpressionShape {
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Result<(), ShellError> {
         // Look for an expression at the cursor
-        color_syntax(&AnyExpressionStartShape, token_nodes, context, shapes).1?;
+        color_fallible_syntax(&AnyExpressionStartShape, token_nodes, context, shapes)?;
 
         match continue_coloring_expression(token_nodes, context, shapes) {
             Err(_) => {
@@ -97,11 +97,12 @@ pub(crate) fn continue_coloring_expression(
     shapes: &mut Vec<Tagged<FlatShape>>,
 ) -> Result<(), ShellError> {
     // if there's not even one expression continuation, fail
-    color_syntax(&ExpressionContinuationShape, token_nodes, context, shapes).1?;
+    color_fallible_syntax(&ExpressionContinuationShape, token_nodes, context, shapes)?;
 
     loop {
         // Check to see whether there's any continuation after the head expression
-        let result = color_syntax(&ExpressionContinuationShape, token_nodes, context, shapes).1;
+        let result =
+            color_fallible_syntax(&ExpressionContinuationShape, token_nodes, context, shapes);
 
         match result {
             Err(_) => {
@@ -223,8 +224,13 @@ impl FallibleColorSyntax for BareTailShape {
         let len = shapes.len();
 
         loop {
-            let word =
-                color_syntax_with(&BareShape, &FlatShape::Word, token_nodes, context, shapes).1;
+            let word = color_fallible_syntax_with(
+                &BareShape,
+                &FlatShape::Word,
+                token_nodes,
+                context,
+                shapes,
+            );
 
             match word {
                 // if a word was found, continue
@@ -234,14 +240,13 @@ impl FallibleColorSyntax for BareTailShape {
             }
 
             // try to find a dot
-            let dot = color_syntax_with(
+            let dot = color_fallible_syntax_with(
                 &ColorableDotShape,
                 &FlatShape::Word,
                 token_nodes,
                 context,
                 shapes,
-            )
-            .1;
+            );
 
             match dot {
                 // if a dot was found, try to find another word

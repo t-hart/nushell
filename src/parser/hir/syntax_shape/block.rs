@@ -2,10 +2,10 @@ use crate::errors::ShellError;
 use crate::parser::{
     hir,
     hir::syntax_shape::{
-        color_fallible_syntax, color_syntax, color_syntax_with, continue_expression, expand_expr,
-        expand_syntax, DelimitedShape, ExpandContext, ExpandExpression,
-        ExpressionContinuationShape, ExpressionListShape, FallibleColorSyntax, FlatShape,
-        MemberShape, PathTailShape, VariablePathShape,
+        color_fallible_syntax, color_syntax_with, continue_expression, expand_expr, expand_syntax,
+        DelimitedShape, ExpandContext, ExpandExpression, ExpressionContinuationShape,
+        ExpressionListShape, FallibleColorSyntax, FlatShape, MemberShape, PathTailShape,
+        VariablePathShape,
     },
     hir::tokens_iterator::TokensIterator,
     parse::token_tree::Delimiter,
@@ -55,7 +55,7 @@ impl FallibleColorSyntax for AnyBlockShape {
         }
 
         // Otherwise, look for a shorthand block. If none found, fail
-        color_syntax(&ShorthandBlock, token_nodes, context, shapes).1
+        color_fallible_syntax(&ShorthandBlock, token_nodes, context, shapes)
     }
 }
 
@@ -150,8 +150,8 @@ impl FallibleColorSyntax for ShorthandPath {
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Result<(), ShellError> {
-        token_nodes.checkpoint_with(|token_nodes| {
-            let variable = color_syntax(&VariablePathShape, token_nodes, context, shapes).1;
+        token_nodes.atomic(|token_nodes| {
+            let variable = color_fallible_syntax(&VariablePathShape, token_nodes, context, shapes);
 
             match variable {
                 Ok(_) => {
@@ -165,11 +165,11 @@ impl FallibleColorSyntax for ShorthandPath {
             }
 
             // look for a member (`<member>` -> `$it.<member>`)
-            color_syntax(&MemberShape, token_nodes, context, shapes).1?;
+            color_fallible_syntax(&MemberShape, token_nodes, context, shapes)?;
 
             // Now that we've synthesized the head, of the path, proceed to expand the tail of the path
             // like any other path.
-            let tail = color_syntax(&PathTailShape, token_nodes, context, shapes).1;
+            let tail = color_fallible_syntax(&PathTailShape, token_nodes, context, shapes);
 
             match tail {
                 Ok(_) => {}

@@ -2,8 +2,9 @@ use crate::errors::ShellError;
 use crate::parser::{
     hir,
     hir::syntax_shape::{
-        color_syntax, expand_atom, expand_expr, maybe_spaced, spaced, AnyExpressionShape,
-        ColorSyntax, ExpandContext, ExpandSyntax, ExpansionRule, SpaceShape,
+        color_fallible_syntax, color_syntax, expand_atom, expand_expr, maybe_spaced, spaced,
+        AnyExpressionShape, ColorSyntax, ExpandContext, ExpandSyntax, ExpansionRule,
+        MaybeSpaceShape, SpaceShape,
     },
     hir::TokensIterator,
     FlatShape,
@@ -65,6 +66,9 @@ impl ColorSyntax for ExpressionListShape {
         // coloring mode")
         let mut backoff = false;
 
+        // Consume any leading whitespace
+        color_syntax(&MaybeSpaceShape, token_nodes, context, shapes);
+
         loop {
             // If we reached the very end of the token stream, we're done
             if token_nodes.at_end() {
@@ -74,7 +78,7 @@ impl ColorSyntax for ExpressionListShape {
             if backoff {
                 let len = shapes.len();
 
-                // If we previously encountered a parsing error, switch to backoff coloring mode
+                // If we previously encountered a parsing error, use backoff coloring mode
                 color_syntax(&SimplestExpression, token_nodes, context, shapes);
 
                 if len == shapes.len() && !token_nodes.at_end() {
@@ -82,14 +86,26 @@ impl ColorSyntax for ExpressionListShape {
                     panic!("Unexpected tokens left that couldn't be colored even with SimplestExpression")
                 }
             } else {
-                match color_syntax(&SpaceShape, token_nodes, context, shapes).1 {
-                    Err(_) => backoff = true,
+                // Try to color the head of the stream as an expression
+                match color_fallible_syntax(&AnyExpressionShape, token_nodes, context, shapes) {
+                    // If no expression was found, switch to backoff coloring mode
+                    Err(_) => {
+                        backoff = true;
+                        continue;
+                    }
+                    Ok(_) => {}
+                }
+
+                // If an expression was found, consume a space
+                match color_fallible_syntax(&SpaceShape, token_nodes, context, shapes) {
+                    Err(_) => {
+                        // If no space was found, we're either at the end or there's an error.
+                        // Either way, switch to backoff coloring mode. If we're at the end
+                        // it won't have any consequences.
+                        backoff = true;
+                    }
                     Ok(_) => {
-                        // Otherwise, try to color the head of the stream as an expression
-                        match color_syntax(&AnyExpressionShape, token_nodes, context, shapes).1 {
-                            Err(_) => backoff = true,
-                            Ok(_) => {}
-                        }
+                        // Otherwise, move on to the next expression
                     }
                 }
             }

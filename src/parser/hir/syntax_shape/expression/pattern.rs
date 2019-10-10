@@ -20,7 +20,7 @@ impl FallibleColorSyntax for PatternShape {
         context: &ExpandContext,
         shapes: &mut Vec<Tagged<FlatShape>>,
     ) -> Result<(), ShellError> {
-        token_nodes.checkpoint_with(|token_nodes| {
+        token_nodes.atomic(|token_nodes| {
             let atom = expand_atom(token_nodes, "pattern", context, ExpansionRule::permissive())?;
 
             match &atom.item {

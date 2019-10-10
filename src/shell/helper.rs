@@ -1,5 +1,5 @@
 use crate::context::Context;
-use crate::parser::hir::syntax_shape::{color_syntax, PipelineShape};
+use crate::parser::hir::syntax_shape::{color_fallible_syntax, FlatShape, PipelineShape};
 use crate::parser::hir::TokensIterator;
 use crate::parser::nom_input;
 use crate::parser::parse::token_tree::TokenNode;
@@ -7,6 +7,7 @@ use crate::parser::parse::tokens::RawToken;
 use crate::parser::{Pipeline, PipelineElement};
 use crate::{Tag, Tagged, TaggedItem, Text};
 use ansi_term::Color;
+use log::trace;
 use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -80,7 +81,7 @@ impl Highlighter for Helper {
                 };
 
                 let Pipeline { parts } = pipeline.clone();
-                let mut iter = parts.into_iter();
+                let iter = parts.into_iter();
 
                 let tokens = vec![TokenNode::Pipeline(pipeline.clone().tagged(v.tag()))];
                 let mut tokens = TokensIterator::all(&tokens[..], v.tag());
@@ -92,26 +93,32 @@ impl Highlighter for Helper {
                 let mut shapes = vec![];
 
                 // We just constructed a token list that only contains a pipeline, so it can't fail
-                color_syntax(&PipelineShape, &mut tokens, &expand_context, &mut shapes)
-                    .1
+                color_fallible_syntax(&PipelineShape, &mut tokens, &expand_context, &mut shapes)
                     .unwrap();
 
-                println!(
-                    "\n{:?}",
+                trace!(target: "nu::shapes",
+                    "SHAPES :: {:?}",
                     shapes.iter().map(|shape| shape.item).collect::<Vec<_>>()
                 );
 
-                loop {
-                    match iter.next() {
-                        None => {
-                            return Cow::Owned(out);
-                        }
-                        Some(token) => {
-                            let styled = paint_pipeline_element(&token, line);
-                            out.push_str(&styled.to_string());
-                        }
-                    }
+                for shape in shapes {
+                    let styled = paint_flat_shape(shape, line);
+                    out.push_str(&styled);
                 }
+
+                Cow::Owned(out)
+
+                // loop {
+                //     match iter.next() {
+                //         None => {
+                //             return Cow::Owned(out);
+                //         }
+                //         Some(token) => {
+                //             let styled = paint_pipeline_element(&token, line);
+                //             out.push_str(&styled.to_string());
+                //         }
+                //     }
+                // }
             }
         }
     }
@@ -131,6 +138,45 @@ fn vec_tag<T>(input: Vec<Tagged<T>>) -> Option<Tag> {
         None => first,
         Some(last) => first.until(last.tag),
     })
+}
+
+fn paint_flat_shape(flat_shape: Tagged<FlatShape>, line: &str) -> String {
+    let style = match &flat_shape.item {
+        FlatShape::OpenDelimiter(_) => Color::White.normal(),
+        FlatShape::CloseDelimiter(_) => Color::White.normal(),
+        FlatShape::ItVariable => Color::Purple.bold(),
+        FlatShape::Variable => Color::Purple.normal(),
+        FlatShape::Operator => Color::Yellow.normal(),
+        FlatShape::Dot => Color::White.normal(),
+        FlatShape::InternalCommand => Color::Cyan.bold(),
+        FlatShape::ExternalCommand => Color::Cyan.normal(),
+        FlatShape::ExternalWord => Color::Black.bold(),
+        FlatShape::BareMember => Color::Yellow.bold(),
+        FlatShape::StringMember => Color::Yellow.bold(),
+        FlatShape::String => Color::Green.normal(),
+        FlatShape::Path => Color::Cyan.normal(),
+        FlatShape::GlobPattern => Color::Cyan.bold(),
+        FlatShape::Word => Color::Green.normal(),
+        FlatShape::Pipe => Color::Purple.bold(),
+        FlatShape::Flag => Color::Black.bold(),
+        FlatShape::ShorthandFlag => Color::Black.bold(),
+        FlatShape::Int => Color::Purple.bold(),
+        FlatShape::Decimal => Color::Purple.bold(),
+        FlatShape::Whitespace => Color::White.normal(),
+        FlatShape::Error => Color::Red.bold(),
+        FlatShape::Size { number, unit } => {
+            let number = number.slice(line);
+            let unit = unit.slice(line);
+            return format!(
+                "{}{}",
+                Color::Purple.bold().paint(number),
+                Color::Yellow.paint(unit)
+            );
+        }
+    };
+
+    let body = flat_shape.tag.slice(line);
+    style.paint(body).to_string()
 }
 
 fn paint_token_node(token_node: &TokenNode, line: &str) -> String {
