@@ -229,15 +229,23 @@ impl FallibleColorSyntax for ExpressionContinuationShape {
                     Ok(ContinuationInfo::Dot)
                 }
                 Err(_) => {
-                    token_nodes.atomic(|token_nodes| {
+                    let mut new_shapes = vec![];
+                    let result = token_nodes.atomic(|token_nodes| {
                         // we didn't find a dot, so let's see if we're looking at an infix. If not found, fail
-                        color_fallible_syntax(&InfixShape, token_nodes, context, shapes)?;
+                        color_fallible_syntax(&InfixShape, token_nodes, context, &mut new_shapes)?;
 
                         // now that we've seen an infix shape, look for any expression. If not found, fail
-                        color_fallible_syntax(&AnyExpressionShape, token_nodes, context, shapes)?;
+                        color_fallible_syntax(
+                            &AnyExpressionShape,
+                            token_nodes,
+                            context,
+                            &mut new_shapes,
+                        )?;
 
                         Ok(ContinuationInfo::Infix)
-                    })
+                    })?;
+                    shapes.extend(new_shapes);
+                    Ok(result)
                 }
             }
         })
