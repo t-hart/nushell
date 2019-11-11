@@ -109,12 +109,21 @@ fn string_to_table(
                     headers
                         .iter()
                         .enumerate()
-                        .filter_map(|(i, (header_name, start_position))| {
-                            match headers.get(i + 1) {
-                                Some((_, end)) => (l.get(*start_position..*end)),
+                        .map(|(i, (header_name, start_position))| {
+                            let val = match headers.get(i + 1) {
+                                Some((_, end)) => {
+                                    if *end < l.len() {
+                                        l.get(*start_position..*end)
+                                    } else {
+                                        l.get(*start_position..)
+                                    }
+                                }
                                 None => l.get(*start_position..),
                             }
-                            .map(|x| (header_name.clone(), String::from(x.trim())))
+                            .unwrap_or("")
+                            .trim()
+                            .into();
+                            (header_name.clone(), val)
                         })
                         .collect()
                 })
@@ -144,10 +153,16 @@ fn string_to_table(
                             .iter()
                             .enumerate()
                             .map(|(i, (start, col))| {
-                                let val = (match columns.get(i + 1) {
-                                    Some((end, _)) => l.get(*start..*end),
+                                let val = match columns.get(i + 1) {
+                                    Some((end, _)) => {
+                                        if *end < l.len() {
+                                            l.get(*start..*end)
+                                        } else {
+                                            l.get(*start..)
+                                        }
+                                    }
                                     None => l.get(*start..),
-                                })
+                                }
                                 .unwrap_or("")
                                 .trim()
                                 .into();
