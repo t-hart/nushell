@@ -64,6 +64,8 @@ fn string_to_table(
         Use the set to create headers
         */
         if headerless {
+            // let ls = lines.collect::Vec<&str>();
+            let ls: Vec<&str> = lines.collect();
             let find_indices = |line: &str| {
                 let words = line
                     .split(&separator)
@@ -82,39 +84,47 @@ fn string_to_table(
                     )
                     .1
             };
-            let indices = lines
-                .map(find_indices)
-                .fold(HashSet::new(), |acc, x| {
+            let mut indices = ls
+                .iter()
+                .map(|s| find_indices(*s))
+                .fold(HashSet::new(), |mut acc, x| {
                     acc.extend(x);
                     acc
                 })
                 .iter()
-                .collect::<Vec<&usize>>();
+                .map(|x| *x)
+                .collect::<Vec<usize>>();
 
             indices.sort();
 
-            let headers: Vec<(String, &usize)> = indices
+            let headers: Vec<(String, usize)> = indices
                 .iter()
                 .enumerate()
                 .map(|(i, position)| (format!("Column{}", i + 1), *position))
                 .collect();
 
-            let result: Vec<(String, String)> = lines
+            let result: Vec<Vec<(String, String)>> = ls
+                .iter()
                 .map(|l| {
                     headers
                         .iter()
                         .enumerate()
-                        .filter_map(
-                            |(i, (header_name, start_position))| match headers.get(i + 1) {
-                                Some((_, end)) => l.get(**start_position..**end),
-                                None => l.get(**start_position..),
-                            },
-                        )
+                        .filter_map(|(i, (header_name, start_position))| {
+                            match headers.get(i + 1) {
+                                Some((_, end)) => (l.get(*start_position..*end)),
+                                None => l.get(*start_position..),
+                            }
+                            .map(|x| (header_name.clone(), String::from(x.trim())))
+                        })
                         .collect()
                 })
                 .collect();
 
-            Some(result)
+            if result.is_empty() {
+                None
+            } else {
+                Some(result)
+            }
         } else {
             let headers_raw = lines.next()?;
 
@@ -133,12 +143,15 @@ fn string_to_table(
                         columns
                             .iter()
                             .enumerate()
-                            .filter_map(|(i, (start, col))| {
-                                (match columns.get(i + 1) {
+                            .map(|(i, (start, col))| {
+                                let val = (match columns.get(i + 1) {
                                     Some((end, _)) => l.get(*start..*end),
                                     None => l.get(*start..),
                                 })
-                                .and_then(|s| Some((col.clone(), String::from(s.trim()))))
+                                .unwrap_or("")
+                                .trim()
+                                .into();
+                                (col.clone(), val)
                             })
                             .collect()
                     })
