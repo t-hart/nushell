@@ -1,6 +1,7 @@
 use crate::commands::WholeStreamCommand;
 use crate::data::{Primitive, TaggedDictBuilder, Value};
 use crate::prelude::*;
+use std::collections::HashSet;
 
 pub struct FromSSV;
 
@@ -55,43 +56,93 @@ fn string_to_table(
     let separator = " ".repeat(std::cmp::max(split_at, 1));
 
     if aligned_columns {
-        let headers_raw = lines.next()?;
+        /*
+        Create lines
+        Split each line into values and indices
+        Use the set of indices from all lines to create a source of truth
+        (If the difference between any two indices is less than ~split_at~, error)?
+        Use the set to create headers
+        */
+        if headerless {
+            let find_indices = |line: &str| {
+                let words = line
+                    .split(&separator)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                words
+                    .fold(
+                        (0, HashSet::new()),
+                        |(current_pos, mut indices), word| match line[current_pos..].find(word) {
+                            None => (current_pos, indices),
+                            Some(index) => {
+                                indices.insert(index);
+                                (current_pos + word.len(), indices)
+                            }
+                        },
+                    )
+                    .1
+            };
+            let indices = lines.map(find_indices).fold(HashSet::new(), |acc, x| {
+                acc.union(&x).map(|x| *x).collect::<HashSet<usize>>()
+            });
+            let headers = (1..=indices.len())
+                .map(|i| format!("Column{}", i))
+                .collect::<Vec<String>>();
+            /*
+            Zip headers with indices
+            Iterate over lines with zipped with
+             */
 
-        let headers = headers_raw
-            .trim()
-            .split(&separator)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| (headers_raw.find(s).unwrap(), s.to_owned()));
-
-        let columns = if headerless {
-            headers
-                .enumerate()
-                .map(|(header_no, (string_index, _))| {
-                    (string_index, format!("Column{}", header_no + 1))
-                })
-                .collect::<Vec<(usize, String)>>()
-        } else {
-            headers.collect::<Vec<(usize, String)>>()
-        };
-
-        Some(
-            lines
-                .map(|l| {
-                    columns
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, (start, col))| {
-                            (match columns.get(i + 1) {
-                                Some((end, _)) => l.get(*start..*end),
-                                None => l.get(*start..),
+            lines.map(|l| {
+                indices.iter()
+            })
+            Some(
+                lines
+                    .map(|l| {
+                        columns
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, (start, col))| {
+                                (match columns.get(i + 1) {
+                                    Some((end, _)) => l.get(*start..*end),
+                                    None => l.get(*start..),
+                                })
+                                .and_then(|s| Some((col.clone(), String::from(s.trim()))))
                             })
-                            .and_then(|s| Some((col.clone(), String::from(s.trim()))))
-                        })
-                        .collect()
-                })
-                .collect(),
-        )
+                            .collect()
+                    })
+                    .collect(),
+            )
+        } else {
+            let headers_raw = lines.next()?;
+
+            let headers = headers_raw
+                .trim()
+                .split(&separator)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| (headers_raw.find(s).unwrap(), s.to_owned()));
+
+            let columns = headers.collect::<Vec<(usize, String)>>();
+
+            Some(
+                lines
+                    .map(|l| {
+                        columns
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, (start, col))| {
+                                (match columns.get(i + 1) {
+                                    Some((end, _)) => l.get(*start..*end),
+                                    None => l.get(*start..),
+                                })
+                                .and_then(|s| Some((col.clone(), String::from(s.trim()))))
+                            })
+                            .collect()
+                    })
+                    .collect(),
+            )
+        }
     } else {
         let headers = lines
             .next()?
@@ -250,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn it_ignores_headers_when_headerless() {
+    fn it_uses_first_row_as_data_when_headerless() {
         let input = r#"
             a b
             1 2
@@ -260,6 +311,7 @@ mod tests {
         assert_eq!(
             result,
             Some(vec![
+                vec![owned("Column1", "a"), owned("Column2", "b")],
                 vec![owned("Column1", "1"), owned("Column2", "2")],
                 vec![owned("Column1", "3"), owned("Column2", "4")]
             ])
@@ -355,6 +407,43 @@ mod tests {
                 owned("colA", "val1"),
                 owned("col B", "val2   trailing value that should be included"),
             ],]
+        )
+    }
+
+    #[test]
+    fn it_handles_empty_values_when_headerless_and_aligned_columns() {
+        let input = r#"
+            a  b      d
+            1     3   4
+                                   last
+        "#;
+
+        let result = string_to_table(input, true, true, 2).unwrap();
+        assert_eq!(
+            result,
+            vec![
+                vec![
+                    owned("Column1", "a"),
+                    owned("Column2", "b"),
+                    owned("Column3", ""),
+                    owned("Column4", "d"),
+                    owned("Column5", "")
+                ],
+                vec![
+                    owned("Column1", "1"),
+                    owned("Column2", ""),
+                    owned("Column3", "3"),
+                    owned("Column4", "4"),
+                    owned("Column5", "")
+                ],
+                vec![
+                    owned("Column1", ""),
+                    owned("Column2", ""),
+                    owned("Column3", ""),
+                    owned("Column4", ""),
+                    owned("Column5", "last")
+                ],
+            ]
         )
     }
 }
