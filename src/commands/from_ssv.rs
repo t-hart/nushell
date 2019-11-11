@@ -82,37 +82,39 @@ fn string_to_table(
                     )
                     .1
             };
-            let indices = lines.map(find_indices).fold(HashSet::new(), |acc, x| {
-                acc.union(&x).map(|x| *x).collect::<HashSet<usize>>()
-            });
-            let headers = (1..=indices.len())
-                .map(|i| format!("Column{}", i))
-                .collect::<Vec<String>>();
-            /*
-            Zip headers with indices
-            Iterate over lines with zipped with
-             */
+            let indices = lines
+                .map(find_indices)
+                .fold(HashSet::new(), |acc, x| {
+                    acc.extend(x);
+                    acc
+                })
+                .iter()
+                .collect::<Vec<&usize>>();
 
-            lines.map(|l| {
-                indices.iter()
-            })
-            Some(
-                lines
-                    .map(|l| {
-                        columns
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(i, (start, col))| {
-                                (match columns.get(i + 1) {
-                                    Some((end, _)) => l.get(*start..*end),
-                                    None => l.get(*start..),
-                                })
-                                .and_then(|s| Some((col.clone(), String::from(s.trim()))))
-                            })
-                            .collect()
-                    })
-                    .collect(),
-            )
+            indices.sort();
+
+            let headers: Vec<(String, &usize)> = indices
+                .iter()
+                .enumerate()
+                .map(|(i, position)| (format!("Column{}", i + 1), *position))
+                .collect();
+
+            let result: Vec<(String, String)> = lines
+                .map(|l| {
+                    headers
+                        .iter()
+                        .enumerate()
+                        .filter_map(
+                            |(i, (header_name, start_position))| match headers.get(i + 1) {
+                                Some((_, end)) => l.get(**start_position..**end),
+                                None => l.get(**start_position..),
+                            },
+                        )
+                        .collect()
+                })
+                .collect();
+
+            Some(result)
         } else {
             let headers_raw = lines.next()?;
 
