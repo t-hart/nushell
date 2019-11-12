@@ -46,6 +46,106 @@ impl WholeStreamCommand for FromSSV {
     }
 }
 
+enum SeparationType {
+    AlignedColumns,
+    SpaceSeparated,
+}
+
+enum HeaderOptions<'a> {
+    WithHeaders(&'a str),
+    WithoutHeaders,
+}
+
+fn parse_aligned_columns<'a>(
+    lines: impl Iterator<Item = &'a str>,
+    headers: HeaderOptions,
+    separator: &str,
+) -> Vec<Vec<(String, String)>> {
+    fn construct<'a>(
+        lines: impl Iterator<Item = &'a str>,
+        headers: Vec<(String, usize)>,
+    ) -> Vec<Vec<(String, String)>> {
+        lines
+            .map(|l| {
+                headers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (header_name, start_position))| {
+                        let val = match headers.get(i + 1) {
+                            Some((_, end)) => {
+                                if *end < l.len() {
+                                    l.get(*start_position..*end)
+                                } else {
+                                    l.get(*start_position..)
+                                }
+                            }
+                            None => l.get(*start_position..),
+                        }
+                        .unwrap_or("")
+                        .trim()
+                        .into();
+                        (header_name.clone(), val)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    let parse_with_headers = |lines, headers_raw: &str| {
+        let headers = headers_raw
+            .trim()
+            .split(&separator)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| (s.to_owned(), headers_raw.find(s).unwrap()));
+
+        let columns = headers.collect::<Vec<(String, usize)>>();
+
+        construct(lines, columns)
+    };
+
+    let parse_without_headers = |ls: Vec<&str>| {
+        let find_indices = |line: &str| {
+            let values = line
+                .split(&separator)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            values
+                .fold(
+                    (0, HashSet::new()),
+                    |(current_pos, mut indices), value| match line[current_pos..].find(value) {
+                        None => (current_pos, indices),
+                        Some(index) => {
+                            let absolute_index = current_pos + index;
+                            indices.insert(absolute_index);
+                            (absolute_index + value.len(), indices)
+                        }
+                    },
+                )
+                .1
+        };
+        let mut indices = ls
+            .iter()
+            .flat_map(|s| find_indices(*s))
+            .collect::<Vec<usize>>();
+
+        indices.sort();
+        indices.dedup();
+
+        let headers: Vec<(String, usize)> = indices
+            .iter()
+            .enumerate()
+            .map(|(i, position)| (format!("Column{}", i + 1), *position))
+            .collect();
+
+        construct(ls.iter().map(|s| s.to_owned()), headers)
+    };
+
+    match headers {
+        HeaderOptions::WithHeaders(headers_raw) => parse_with_headers(lines, headers_raw),
+        HeaderOptions::WithoutHeaders => parse_without_headers(lines.collect()),
+    }
+}
 fn string_to_table(
     s: &str,
     headerless: bool,
@@ -56,110 +156,16 @@ fn string_to_table(
     let separator = " ".repeat(std::cmp::max(split_at, 1));
 
     if aligned_columns {
-        if headerless {
-            let ls: Vec<&str> = lines.collect();
-            let find_indices = |line: &str| {
-                let values = line
-                    .split(&separator)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty());
-                values
-                    .fold(
-                        (0, HashSet::new()),
-                        |(current_pos, mut indices), value| match line[current_pos..].find(value) {
-                            None => (current_pos, indices),
-                            Some(index) => {
-                                let absolute_index = current_pos + index;
-                                indices.insert(absolute_index);
-                                (absolute_index + value.len(), indices)
-                            }
-                        },
-                    )
-                    .1
-            };
-            let mut indices = ls
-                .iter()
-                .flat_map(|s| find_indices(*s))
-                .collect::<Vec<usize>>();
-
-            indices.sort();
-            indices.dedup();
-
-            let headers: Vec<(String, usize)> = indices
-                .iter()
-                .enumerate()
-                .map(|(i, position)| (format!("Column{}", i + 1), *position))
-                .collect();
-
-            let result: Vec<Vec<(String, String)>> = ls
-                .iter()
-                .map(|l| {
-                    headers
-                        .iter()
-                        .enumerate()
-                        .map(|(i, (header_name, start_position))| {
-                            let val = match headers.get(i + 1) {
-                                Some((_, end)) => {
-                                    if *end < l.len() {
-                                        l.get(*start_position..*end)
-                                    } else {
-                                        l.get(*start_position..)
-                                    }
-                                }
-                                None => l.get(*start_position..),
-                            }
-                            .unwrap_or("")
-                            .trim()
-                            .into();
-                            (header_name.clone(), val)
-                        })
-                        .collect()
-                })
-                .collect();
-
-            if result.is_empty() {
-                None
-            } else {
-                Some(result)
-            }
+        let (ls, header_options) = if headerless {
+            (lines, HeaderOptions::WithoutHeaders)
         } else {
-            let headers_raw = lines.next()?;
-
-            let headers = headers_raw
-                .trim()
-                .split(&separator)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|s| (headers_raw.find(s).unwrap(), s.to_owned()));
-
-            let columns = headers.collect::<Vec<(usize, String)>>();
-
-            Some(
-                lines
-                    .map(|l| {
-                        columns
-                            .iter()
-                            .enumerate()
-                            .map(|(i, (start, col))| {
-                                let val = match columns.get(i + 1) {
-                                    Some((end, _)) => {
-                                        if *end < l.len() {
-                                            l.get(*start..*end)
-                                        } else {
-                                            l.get(*start..)
-                                        }
-                                    }
-                                    None => l.get(*start..),
-                                }
-                                .unwrap_or("")
-                                .trim()
-                                .into();
-                                (col.clone(), val)
-                            })
-                            .collect()
-                    })
-                    .collect(),
-            )
+            let headers = lines.next()?;
+            (lines, HeaderOptions::WithHeaders(headers))
+        };
+        let r = parse_aligned_columns(ls, header_options, &separator);
+        match r.len() {
+            0 => None,
+            _ => Some(r),
         }
     } else {
         let mut rows_iter = lines.map(|l| {
