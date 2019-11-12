@@ -46,11 +46,6 @@ impl WholeStreamCommand for FromSSV {
     }
 }
 
-enum SeparationType {
-    AlignedColumns,
-    SpaceSeparated,
-}
-
 enum HeaderOptions<'a> {
     WithHeaders(&'a str),
     WithoutHeaders,
