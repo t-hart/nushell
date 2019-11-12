@@ -454,7 +454,7 @@ fn converts_from_ssv_text_treating_first_line_as_data_with_flag() {
             cwd: dirs.test(), h::pipeline(
             r#"
                 open oc_get_svc.txt
-                | from-ssv --headerless
+                | from-ssv --headerless --aligned-columns
                 | first
                 | get Column1
                 | echo $it

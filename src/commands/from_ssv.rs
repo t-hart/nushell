@@ -56,29 +56,22 @@ fn string_to_table(
     let separator = " ".repeat(std::cmp::max(split_at, 1));
 
     if aligned_columns {
-        /*
-        Create lines
-        Split each line into values and indices
-        Use the set of indices from all lines to create a source of truth
-        (If the difference between any two indices is less than ~split_at~, error)?
-        Use the set to create headers
-        */
         if headerless {
-            // let ls = lines.collect::Vec<&str>();
             let ls: Vec<&str> = lines.collect();
             let find_indices = |line: &str| {
-                let words = line
+                let values = line
                     .split(&separator)
                     .map(str::trim)
                     .filter(|s| !s.is_empty());
-                words
+                values
                     .fold(
                         (0, HashSet::new()),
-                        |(current_pos, mut indices), word| match line[current_pos..].find(word) {
+                        |(current_pos, mut indices), value| match line[current_pos..].find(value) {
                             None => (current_pos, indices),
                             Some(index) => {
-                                indices.insert(index);
-                                (current_pos + word.len(), indices)
+                                let absolute_index = current_pos + index;
+                                indices.insert(absolute_index);
+                                (absolute_index + value.len(), indices)
                             }
                         },
                     )
@@ -86,16 +79,11 @@ fn string_to_table(
             };
             let mut indices = ls
                 .iter()
-                .map(|s| find_indices(*s))
-                .fold(HashSet::new(), |mut acc, x| {
-                    acc.extend(x);
-                    acc
-                })
-                .iter()
-                .map(|x| *x)
+                .flat_map(|s| find_indices(*s))
                 .collect::<Vec<usize>>();
 
             indices.sort();
+            indices.dedup();
 
             let headers: Vec<(String, usize)> = indices
                 .iter()
@@ -443,9 +431,9 @@ mod tests {
     #[test]
     fn it_handles_empty_values_when_headerless_and_aligned_columns() {
         let input = r#"
-            a  b      d
-            1     3   4
-                                   last
+            a multi-word value  b           d
+            1                        3-3    4
+                                                       last
         "#;
 
         let result = string_to_table(input, true, true, 2).unwrap();
@@ -453,7 +441,7 @@ mod tests {
             result,
             vec![
                 vec![
-                    owned("Column1", "a"),
+                    owned("Column1", "a multi-word value"),
                     owned("Column2", "b"),
                     owned("Column3", ""),
                     owned("Column4", "d"),
@@ -462,7 +450,7 @@ mod tests {
                 vec![
                     owned("Column1", "1"),
                     owned("Column2", ""),
-                    owned("Column3", "3"),
+                    owned("Column3", "3-3"),
                     owned("Column4", "4"),
                     owned("Column5", "")
                 ],
