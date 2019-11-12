@@ -162,37 +162,37 @@ fn string_to_table(
             )
         }
     } else {
-        let headers = lines
-            .next()?
-            .split(&separator)
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_owned())
-            .collect::<Vec<String>>();
+        let mut rows_iter = lines.map(|l| {
+            l.split(&separator)
+                .map(|s| String::from(s.trim()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        });
 
-        let header_row = if headerless {
-            (1..=headers.len())
+        let (headers, rows): (Vec<String>, Vec<Vec<String>>) = if headerless {
+            let rows_collected: Vec<Vec<String>> = rows_iter.collect();
+            let num_columns = rows_collected.iter().map(|r| r.len()).max()?;
+
+            let headers = (1..=num_columns)
                 .map(|i| format!("Column{}", i))
-                .collect::<Vec<String>>()
+                .collect::<Vec<String>>();
+            (headers, rows_collected)
         } else {
-            headers
+            let header_row = rows_iter.next()?;
+            (header_row, rows_iter.collect())
         };
 
-        Some(
-            lines
-                .map(|l| {
-                    header_row
-                        .iter()
-                        .zip(
-                            l.split(&separator)
-                                .map(|s| s.trim())
-                                .filter(|s| !s.is_empty()),
-                        )
-                        .map(|(a, b)| (String::from(a), String::from(b)))
-                        .collect()
-                })
-                .collect(),
-        )
+        let processed = rows
+            .iter()
+            .map(|r| {
+                headers
+                    .iter()
+                    .zip(r)
+                    .map(|(a, b)| (a.clone(), b.clone()))
+                    .collect()
+            })
+            .collect();
+        Some(processed)
     }
 }
 
@@ -463,5 +463,18 @@ mod tests {
                 ],
             ]
         )
+    }
+
+    #[test]
+    fn headerless_is_handled_correctly_regardless_of_aligned_columns() {
+        let input =             r#"
+                docker-registry   docker-registry=default                   docker-registry=default   172.30.78.158   5000/TCP
+                kubernetes        component=apiserver,provider=kubernetes   <none>                    172.30.0.2      443/TCP
+                kubernetes-ro     component=apiserver,provider=kubernetes   <none>                    172.30.0.1      80/TCP
+            "#;
+
+        let aligned_columns = string_to_table(input, true, true, 2).unwrap();
+        let separator = string_to_table(input, true, false, 2).unwrap();
+        assert_eq!(aligned_columns, separator);
     }
 }
