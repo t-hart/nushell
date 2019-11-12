@@ -1,7 +1,6 @@
 use crate::commands::WholeStreamCommand;
 use crate::data::{Primitive, TaggedDictBuilder, Value};
 use crate::prelude::*;
-use std::collections::HashSet;
 
 pub struct FromSSV;
 
@@ -86,13 +85,34 @@ fn parse_aligned_columns<'a>(
             .collect()
     }
 
+    let find_indices = |line: &str| {
+        let values = line
+            .split(&separator)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        values
+            .fold(
+                (0, vec![]),
+                |(current_pos, mut indices), value| match line[current_pos..].find(value) {
+                    None => (current_pos, indices),
+                    Some(index) => {
+                        let absolute_index = current_pos + index;
+                        indices.push(absolute_index);
+                        (absolute_index + value.len(), indices)
+                    }
+                },
+            )
+            .1
+    };
+
     let parse_with_headers = |lines, headers_raw: &str| {
+        let indices = find_indices(headers_raw);
         let headers = headers_raw
-            .trim()
             .split(&separator)
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(|s| (s.to_owned(), headers_raw.find(s).unwrap()));
+            .map(String::from)
+            .zip(indices);
 
         let columns = headers.collect::<Vec<(String, usize)>>();
 
@@ -100,25 +120,6 @@ fn parse_aligned_columns<'a>(
     };
 
     let parse_without_headers = |ls: Vec<&str>| {
-        let find_indices = |line: &str| {
-            let values = line
-                .split(&separator)
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            values
-                .fold(
-                    (0, HashSet::new()),
-                    |(current_pos, mut indices), value| match line[current_pos..].find(value) {
-                        None => (current_pos, indices),
-                        Some(index) => {
-                            let absolute_index = current_pos + index;
-                            indices.insert(absolute_index);
-                            (absolute_index + value.len(), indices)
-                        }
-                    },
-                )
-                .1
-        };
         let mut indices = ls
             .iter()
             .flat_map(|s| find_indices(*s))
@@ -141,6 +142,52 @@ fn parse_aligned_columns<'a>(
         HeaderOptions::WithoutHeaders => parse_without_headers(lines.collect()),
     }
 }
+
+fn parse_separated_columns<'a>(
+    lines: impl Iterator<Item = &'a str>,
+    headers: HeaderOptions,
+    separator: &str,
+) -> Vec<Vec<(String, String)>> {
+    fn collect<'a>(
+        headers: Vec<String>,
+        rows: impl Iterator<Item = &'a str>,
+        separator: &str,
+    ) -> Vec<Vec<(String, String)>> {
+        rows.map(|r| {
+            headers
+                .iter()
+                .zip(r.split(separator).map(str::trim).filter(|s| !s.is_empty()))
+                .map(|(a, b)| (a.to_owned(), b.to_owned()))
+                .collect()
+        })
+        .collect()
+    }
+
+    let parse_with_headers = |lines, headers_raw: &str| {
+        let headers = headers_raw
+            .split(&separator)
+            .map(str::trim)
+            .map(|s| s.to_owned())
+            .filter(|s| !s.is_empty())
+            .collect();
+        collect(headers, lines, separator)
+    };
+
+    let parse_without_headers = |ls: Vec<&str>| {
+        let num_columns = ls.iter().map(|r| r.len()).max().unwrap_or(0);
+
+        let headers = (1..=num_columns)
+            .map(|i| format!("Column{}", i))
+            .collect::<Vec<String>>();
+        collect(headers, ls.iter().map(|s| s.as_ref()), separator)
+    };
+
+    match headers {
+        HeaderOptions::WithHeaders(headers_raw) => parse_with_headers(lines, headers_raw),
+        HeaderOptions::WithoutHeaders => parse_without_headers(lines.collect()),
+    }
+}
+
 fn string_to_table(
     s: &str,
     headerless: bool,
@@ -150,50 +197,23 @@ fn string_to_table(
     let mut lines = s.lines().filter(|l| !l.trim().is_empty());
     let separator = " ".repeat(std::cmp::max(split_at, 1));
 
-    if aligned_columns {
-        let (ls, header_options) = if headerless {
-            (lines, HeaderOptions::WithoutHeaders)
-        } else {
-            let headers = lines.next()?;
-            (lines, HeaderOptions::WithHeaders(headers))
-        };
-        let r = parse_aligned_columns(ls, header_options, &separator);
-        match r.len() {
-            0 => None,
-            _ => Some(r),
-        }
+    let (ls, header_options) = if headerless {
+        (lines, HeaderOptions::WithoutHeaders)
     } else {
-        let mut rows_iter = lines.map(|l| {
-            l.split(&separator)
-                .map(|s| String::from(s.trim()))
-                .filter(|s| !s.is_empty())
-                .collect()
-        });
+        let headers = lines.next()?;
+        (lines, HeaderOptions::WithHeaders(headers))
+    };
 
-        let (headers, rows): (Vec<String>, Vec<Vec<String>>) = if headerless {
-            let rows_collected: Vec<Vec<String>> = rows_iter.collect();
-            let num_columns = rows_collected.iter().map(|r| r.len()).max()?;
+    let f = if aligned_columns {
+        parse_aligned_columns
+    } else {
+        parse_separated_columns
+    };
 
-            let headers = (1..=num_columns)
-                .map(|i| format!("Column{}", i))
-                .collect::<Vec<String>>();
-            (headers, rows_collected)
-        } else {
-            let header_row = rows_iter.next()?;
-            (header_row, rows_iter.collect())
-        };
-
-        let processed = rows
-            .iter()
-            .map(|r| {
-                headers
-                    .iter()
-                    .zip(r)
-                    .map(|(a, b)| (a.clone(), b.clone()))
-                    .collect()
-            })
-            .collect();
-        Some(processed)
+    let parsed = f(ls, header_options, &separator);
+    match parsed.len() {
+        0 => None,
+        _ => Some(parsed),
     }
 }
 
@@ -467,15 +487,18 @@ mod tests {
     }
 
     #[test]
-    fn headerless_is_handled_correctly_regardless_of_aligned_columns() {
+    fn input_is_parsed_correctly_if_either_option_works() {
         let input =             r#"
                 docker-registry   docker-registry=default                   docker-registry=default   172.30.78.158   5000/TCP
                 kubernetes        component=apiserver,provider=kubernetes   <none>                    172.30.0.2      443/TCP
                 kubernetes-ro     component=apiserver,provider=kubernetes   <none>                    172.30.0.1      80/TCP
             "#;
 
-        let aligned_columns = string_to_table(input, true, true, 2).unwrap();
-        let separator = string_to_table(input, true, false, 2).unwrap();
-        assert_eq!(aligned_columns, separator);
+        let aligned_columns_headerless = string_to_table(input, true, true, 2).unwrap();
+        let separator_headerless = string_to_table(input, true, false, 2).unwrap();
+        let aligned_columns_with_headers = string_to_table(input, false, true, 2).unwrap();
+        let separator_with_headers = string_to_table(input, false, false, 2).unwrap();
+        assert_eq!(aligned_columns_headerless, separator_headerless);
+        assert_eq!(aligned_columns_with_headers, separator_with_headers);
     }
 }
